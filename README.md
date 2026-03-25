@@ -9,6 +9,11 @@
 </p>
 
 <p align="center">
+  English | <a href="README_CN.md">中文</a>
+</p>
+
+
+<p align="center">
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-features">Features</a> •
   <a href="#-screenshots">Screenshots</a> •
