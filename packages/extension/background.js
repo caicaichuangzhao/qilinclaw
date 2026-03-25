@@ -13,7 +13,7 @@
 let ws = null;
 let connected = false;
 let autoConnect = false; // Persisted in chrome.storage.local
-let serverUrl = 'ws://localhost:3000/ws/extension';
+let serverUrl = 'ws://localhost:18168/ws/extension';
 let reconnectTimer = null;
 let reconnectDelay = 1000;
 const MAX_RECONNECT_DELAY = 30000;
