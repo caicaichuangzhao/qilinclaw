@@ -12,7 +12,6 @@
   English | <a href="README_CN.md">中文</a>
 </p>
 
-
 <p align="center">
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-features">Features</a> •
@@ -25,7 +24,11 @@
 
 ## ✨ What is QilinClaw?
 
-QilinClaw is a **self-hosted AI assistant platform** that lets you create, manage, and deploy AI agents with a beautiful visual interface. No command-line expertise needed — **if you can recognize icons, you can use QilinClaw.**
+QilinClaw is a **self-hosted AI assistant platform** designed to let anyone easily create and manage AI agents.
+
+We've built most features with a **fully visual interface** — from creating agents, connecting chat platforms, building knowledge bases, to system configuration. **If you can read the UI, you can use the software.** Our goal is to lower the barrier to entry as much as possible.
+
+> 📢 This is a personal project with limited testing resources. Some features may not be fully polished yet. If you encounter any issues, please feel free to report them via [Issues](https://github.com/caicaichuangzhao/qilinclaw/issues). Contributions, feedback, and suggestions are always welcome — let's build this together!
 
 ### 🎯 Key Highlights
 
@@ -36,7 +39,7 @@ QilinClaw is a **self-hosted AI assistant platform** that lets you create, manag
 - 🏢 **Office Collaboration** — create team spaces where multiple agents collaborate on tasks
 - 🔌 **MCP Protocol** — extend agent capabilities with Model Context Protocol servers
 - 🌐 **Browser Automation** — agents can control your real browser via Chrome extension
-- 🖱️ **GUI Automation** — agents can operate your desktop (click, type, screenshot)
+- 🖱️ **GUI Automation** *(Beta)* — agents can operate your desktop (click, type, screenshot)
 - 🌍 **Bilingual UI** — full Chinese/English interface, switch with one click
 - 🔒 **Local-First** — all data stays on your machine, no cloud dependency
 
@@ -159,21 +162,31 @@ Connect agents to any messaging platform:
 | Platform | Status | Platform | Status |
 |----------|--------|----------|--------|
 | Telegram | ✅ | Discord | ✅ |
-| WeChat Work (企业微信) | ✅ | DingTalk (钉钉) | ✅ |
-| Feishu (飞书) | ✅ | WhatsApp | ✅ |
+| WeChat Work | ✅ | DingTalk | ✅ |
+| Feishu (Lark) | ✅ | WhatsApp | ✅ |
 | QQ | ✅ | Slack | ✅ |
 | LINE | ✅ | Microsoft Teams | ✅ |
 | Google Chat | ✅ | Mattermost | ✅ |
 | Signal | ✅ | Facebook Messenger | ✅ |
 | iMessage | ✅ | | |
 
-### 🧠 Knowledge Base (RAG)
+### 🧠 Knowledge Base (RAG) & Embedding Configuration
 
 - 📄 Upload PDF, Word, Excel, TXT, Markdown files
 - 🔍 Automatic text chunking and vector embedding
 - 🎯 Semantic search with configurable similarity threshold
 - 🔗 Link knowledge bases to agents for context-aware conversations
 - 🏠 Support local embedding models (no API cost)
+
+#### 💡 Save Token Costs with Embedding
+
+QilinClaw features a **smart context memory system** that converts conversation history and knowledge base content into vectors via embedding models. During conversations, only the most relevant content is retrieved and injected into the prompt — instead of sending the entire history to the AI. This can **significantly reduce token consumption** and save on API costs.
+
+In **Settings → Context Memory Configuration** you can adjust:
+- **Scenario** — presets for different use cases (coding, documents, conversation, research)
+- **Max Tokens** — control the token limit per conversation
+- **Summary Threshold** — auto-generate summaries when messages exceed a threshold, compressing history context
+- **Similarity Threshold** — control vector retrieval precision, filtering low-relevance content
 
 ### 🏢 Office Collaboration
 
@@ -192,7 +205,11 @@ Connect agents to any messaging platform:
 - 🔙 Forward/backward navigation
 - ⚙️ Execute JavaScript
 
-### 🖱️ GUI Desktop Automation
+### 🖱️ GUI Desktop Automation *(Beta)*
+
+> ⚠️ **Warning:** This feature is in Beta. Some operations may not work perfectly. Use with caution.
+>
+> **Emergency Stop:** If GUI automation behaves unexpectedly, **double-press the ESC key** to immediately interrupt all GUI operations and regain mouse/keyboard control.
 
 - 📷 Screen capture and analysis
 - 🔍 UI element scanning (UIAutomation)
@@ -208,11 +225,28 @@ Connect agents to any messaging platform:
 
 ### 🛡️ Safety & Security
 
-- 🔐 Rate limiting per minute/hour
-- 📁 File operation safety (size limits, auto-backup)
-- 🔄 Auto-recovery from system failures
-- 💾 One-click system backup & restore
-- 🩺 Real-time health monitoring
+QilinClaw includes multiple layers of security to protect your system and data:
+
+| Feature | Description |
+|---------|-------------|
+| **Rate Limiting** | Configurable max requests per minute/hour to prevent accidental overconsumption |
+| **File Safety** | File size limits, max concurrent operations, path whitelist protection |
+| **Auto Backup** | Automatically backs up modified files, configurable max backups per file |
+| **System Backup** | One-click backup of your entire system state, one-click restore |
+| **Auto Recovery** | Automatically recovers to the last known good configuration on failure |
+| **Health Monitoring** | Real-time status of database, bots, memory, network, and gateway |
+| **Command Filtering** | Dangerous system commands are automatically blocked |
+| **Input Validation** | Input sanitization layer to prevent injection attacks |
+
+### 🐳 Docker Integration
+
+QilinClaw supports Docker integration to provide a secure sandbox environment for agent code execution:
+
+- Agent-executed code and commands can run inside Docker containers, avoiding direct host machine operations
+- Ideal for scenarios involving user-submitted code or untrusted scripts
+- Enable Docker sandbox mode in model configuration or agent settings
+
+> **Prerequisite: [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine must be installed on the host machine.**
 
 ---
 
@@ -282,6 +316,13 @@ qilinclaw/
 3. Documents are automatically chunked and embedded
 4. Link the knowledge base to any agent
 
+### Configuring Embedding Models (Save Tokens)
+
+1. Go to **Knowledge** → **Embedding Model Configuration**
+2. Select a provider (local model or remote API)
+3. Go to **Settings** → **Context Memory Configuration** to adjust parameters
+4. Choose a scenario preset that fits your use case (coding/documents/conversation/research)
+
 ---
 
 ## 🌍 Language Support
@@ -306,6 +347,10 @@ Switch language anytime from the **sidebar language toggle** — no restart need
 
 **A:** No. QilinClaw runs entirely on your local machine. Your conversations, knowledge bases, and configurations stay on your computer. The only external calls are to the AI model APIs you configure.
 
+### Q: What if GUI automation goes out of control?
+
+**A:** Double-press the ESC key to immediately interrupt all GUI operations and regain mouse/keyboard control. GUI automation is currently in Beta — please report any issues you encounter.
+
 ### Q: How do I update?
 
 ```bash
@@ -316,6 +361,17 @@ node bin/qilinclaw.js install
 ### Q: How do I auto-start QilinClaw on boot?
 
 Running `node bin/qilinclaw.js install` automatically registers a Windows startup task. To remove it, run `node bin/qilinclaw.js uninstall`.
+
+---
+
+## 🤝 Contributing
+
+This project is currently maintained by an individual. Community participation is very welcome:
+
+- 🐛 **Report Bugs** — submit issues on [GitHub Issues](https://github.com/caicaichuangzhao/qilinclaw/issues)
+- 💡 **Suggest Features** — tell us what you'd like to see
+- 🔧 **Submit PRs** — code contributions are welcome
+- ⭐ **Star the Project** — if you find it useful, a star is the best encouragement
 
 ---
 
