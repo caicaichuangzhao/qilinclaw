@@ -9,6 +9,24 @@ packages/client/dist/
 # Database, backups, user data — never commit
 .qilin-claw/
 
+# ─── Databases ────────────────────────────────
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+
+# ─── WhatsApp Bot Cache ──────────────────────
+.wwebjs_cache/
+.wwebjs_auth/
+
+# ─── System Backups & User Data ──────────────
+packages/server/qilin-claw-data/
+**/system-backups/
+
+# ─── Binary / Executables ────────────────────
+*.exe
+*.dll
+
 # ─── Environment Variables ────────────────────
 .env
 .env.local
@@ -27,9 +45,15 @@ Thumbs.db
 *.log
 npm-debug.log*
 
-# ─── Temp / generated ────────────────────────
+# ─── Temp / generated / test files ───────────
 *.tmp
 *.bak
+weather.json
+weather.zip
+response.json
+reminder.bat
+reminder.vbs
+move_to_recycle.vbs
 
 # ─── Gemini Agent Data ───────────────────────
 .gemini/
@@ -37,3 +61,4 @@ npm-debug.log*
 .agent/
 _agents/
 _agent/
+
