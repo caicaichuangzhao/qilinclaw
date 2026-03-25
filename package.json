@@ -1,0 +1,30 @@
+{
+  "name": "qilinclaw",
+  "version": "1.0.0",
+  "description": "QilinClaw - Open source AI assistant platform with multi-platform bot support",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "bin": {
+    "qilinclaw": "./bin/qilinclaw.js"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm run dev -w @qilin-claw/server",
+    "dev:client": "npm run dev -w @qilin-claw/client",
+    "build": "npm run build -w @qilin-claw/server && npm run build -w @qilin-claw/client",
+    "start": "npm run start -w @qilin-claw/server",
+    "postinstall": "npm run build || echo Build skipped"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}

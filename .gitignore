@@ -1,0 +1,39 @@
+# ─── Dependencies ─────────────────────────────
+node_modules/
+
+# ─── Build Output ─────────────────────────────
+packages/server/dist/
+packages/client/dist/
+
+# ─── Runtime Data (.qilin-claw) ───────────────
+# Database, backups, user data — never commit
+.qilin-claw/
+
+# ─── Environment Variables ────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── OS & Editor ──────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# ─── Logs ─────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ─── Temp / generated ────────────────────────
+*.tmp
+*.bak
+
+# ─── Gemini Agent Data ───────────────────────
+.gemini/
+.agents/
+.agent/
+_agents/
+_agent/

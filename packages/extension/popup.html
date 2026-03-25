@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            width: 320px;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #1a1f2e;
+            color: #e2e8f0;
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .header h1 {
+            font-size: 15px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #fbbf24, #f59e0b);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 14px;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+
+        .status-dot.connected {
+            background: #22c55e;
+            box-shadow: 0 0 8px #22c55e80;
+        }
+
+        .status-dot.disconnected {
+            background: #ef4444;
+            box-shadow: 0 0 8px #ef444480;
+        }
+
+        .status-text {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .status-text.connected {
+            color: #22c55e;
+        }
+
+        .status-text.disconnected {
+            color: #ef4444;
+        }
+
+        .input-group {
+            margin-bottom: 12px;
+        }
+
+        .input-group label {
+            display: block;
+            font-size: 11px;
+            color: #94a3b8;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.3);
+            color: #e2e8f0;
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .input-group input:focus {
+            border-color: #fbbf24;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 8px;
+        }
+
+        .btn-connect {
+            background: linear-gradient(135deg, #fbbf24, #f59e0b);
+            color: #000;
+        }
+
+        .btn-connect:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .btn-disconnect {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-disconnect:hover {
+            background: rgba(239, 68, 68, 0.25);
+        }
+
+        .footer {
+            text-align: center;
+            font-size: 10px;
+            color: #475569;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div
+            style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#fbbf24,#f59e0b);display:flex;align-items:center;justify-content:center;font-size:18px;">
+            🦊</div>
+        <h1>QilinClaw Browser Bridge</h1>
+    </div>
+
+    <div class="status-card">
+        <div class="status-row">
+            <div>
+                <span class="status-dot disconnected" id="statusDot"></span>
+                <span class="status-text disconnected" id="statusText">未连接</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="input-group">
+        <label>服务端地址 (Server URL)</label>
+        <input type="text" id="serverUrl" value="ws://localhost:3000/ws/extension"
+            placeholder="ws://localhost:3000/ws/extension" />
+    </div>
+
+    <button class="btn btn-connect" id="connectBtn">连接 (Connect)</button>
+    <button class="btn btn-disconnect" id="disconnectBtn" style="display:none">断开 (Disconnect)</button>
+
+    <div class="footer">QilinClaw v1.0 — AI Browser Automation</div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
