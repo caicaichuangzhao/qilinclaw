@@ -231,7 +231,7 @@ onMounted(() => {
       </div>
       <div v-if="testResult" class="mt-2 text-sm">
         <span v-if="testResult.success" class="text-green-400">
-          {{ t('embedding.connectionSuccess', { latency: testResult.latency }) }}
+          {{ t('embedding.connectionSuccess', { latency: testResult.latency ?? 0 }) }}
         </span>
         <span v-else class="text-red-400">
           {{ t('embedding.connectionFailed') }} {{ testResult.error }}
