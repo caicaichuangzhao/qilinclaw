@@ -47,49 +47,33 @@ We've built most features with a **fully visual interface** — from creating ag
 
 ## 📋 Prerequisites
 
-Before installing QilinClaw, make sure you have the following software installed:
-
 | Software | Version | Required | Download |
 |----------|---------|----------|----------|
 | **Node.js** | v20 LTS or later | ✅ Yes | [nodejs.org](https://nodejs.org/) |
-| **npm** | v9+ (comes with Node.js) | ✅ Yes | Included with Node.js |
 | **Git** | Any recent version | ✅ Yes | [git-scm.com](https://git-scm.com/) |
 | **Python** | 3.8+ | ❌ Optional | [python.org](https://www.python.org/) |
 
-> **Note:** Python is only needed if you want to use local embedding models for the knowledge base. Everything else works without it.
-
-### Supported Operating Systems
-
-- ✅ **Windows** 10/11 (primary, fully tested)
-- ✅ **macOS** (Node.js compatible)
-- ✅ **Linux** (Node.js compatible)
+> **Note:** Python is only needed for local embedding models. Everything else works without it.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Clone the Repository
+### 1. Clone & Install
 
 ```bash
 git clone https://github.com/caicaichuangzhao/qilinclaw.git
 cd qilinclaw
+npm install
+npm link
 ```
 
-### 2. Install & Build
+After `npm link`, the `qilinclaw` command is available globally — you can run it from anywhere.
+
+### 2. Launch
 
 ```bash
-node bin/qilinclaw.js install
-```
-
-This single command will:
-- 📦 Install all dependencies
-- 🔨 Build the server and client
-- ⏰ Register auto-start on login (Windows)
-
-### 3. Launch
-
-```bash
-node bin/qilinclaw.js gateway
+qilinclaw gateway
 ```
 
 The WebUI will **automatically open in your browser** at `http://127.0.0.1:18168/`.
@@ -100,11 +84,11 @@ That's it! 🎉
 
 | Command | Description |
 |---------|-------------|
-| `node bin/qilinclaw.js install` | Install dependencies and build |
-| `node bin/qilinclaw.js gateway` | Start the gateway (auto-opens browser) |
-| `node bin/qilinclaw.js gateway --no-browser` | Start without opening browser |
-| `node bin/qilinclaw.js doctor` | Check environment & dependencies |
-| `node bin/qilinclaw.js uninstall` | Clean up everything |
+| `qilinclaw install` | Install dependencies and build the project |
+| `qilinclaw gateway` | Start the gateway (auto-opens browser) |
+| `qilinclaw gateway --no-browser` | Start without opening browser |
+| `qilinclaw doctor` | Check environment & dependencies |
+| `qilinclaw uninstall` | Clean up everything |
 
 ---
 
@@ -327,9 +311,7 @@ qilinclaw/
 
 ## 🌍 Language Support
 
-QilinClaw supports **Chinese** and **English** out of the box.
-
-Switch language anytime from the **sidebar language toggle** — no restart needed.
+QilinClaw supports **Chinese** and **English** out of the box. Switch language anytime from the **sidebar language toggle** — no restart needed.
 
 ---
 
@@ -345,22 +327,19 @@ Switch language anytime from the **sidebar language toggle** — no restart need
 
 ### Q: Is my data sent to any cloud?
 
-**A:** No. QilinClaw runs entirely on your local machine. Your conversations, knowledge bases, and configurations stay on your computer. The only external calls are to the AI model APIs you configure.
+**A:** No. QilinClaw runs entirely on your local machine. The only external calls are to the AI model APIs you configure.
 
 ### Q: What if GUI automation goes out of control?
 
-**A:** Double-press the ESC key to immediately interrupt all GUI operations and regain mouse/keyboard control. GUI automation is currently in Beta — please report any issues you encounter.
+**A:** Double-press the ESC key to immediately interrupt all GUI operations and regain control. GUI features are currently in Beta — please report any issues you encounter.
 
 ### Q: How do I update?
 
 ```bash
+cd qilinclaw
 git pull
-node bin/qilinclaw.js install
+qilinclaw install
 ```
-
-### Q: How do I auto-start QilinClaw on boot?
-
-Running `node bin/qilinclaw.js install` automatically registers a Windows startup task. To remove it, run `node bin/qilinclaw.js uninstall`.
 
 ---
 
@@ -377,7 +356,7 @@ This project is currently maintained by an individual. Community participation i
 
 ## 📄 License
 
-This project is open-source. See [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 

@@ -2,7 +2,6 @@
   "name": "qilinclaw",
   "version": "1.0.0",
   "description": "QilinClaw - Open source AI assistant platform with multi-platform bot support",
-  "private": true,
   "workspaces": [
     "packages/*"
   ],
