@@ -55,6 +55,49 @@ We've built most features with a **fully visual interface** — from creating ag
 
 > **Note:** Python is only needed for local embedding models. Everything else works without it.
 
+### Step 0 — Install Node.js & Git (skip if already installed)
+
+Open a terminal and run the commands below. If the version numbers print correctly, you already have them — skip to [Quick Start](#-quick-start).
+
+```bash
+node -v   # should print v20.x.x or higher
+git -v    # should print git version x.x.x
+```
+
+<details>
+<summary><b>🪟 Windows</b></summary>
+
+1. Download and install **Node.js LTS** from [https://nodejs.org/](https://nodejs.org/) (check "Add to PATH" during install)
+2. Download and install **Git** from [https://git-scm.com/download/win](https://git-scm.com/download/win) (use default settings)
+3. **Close and re-open** your terminal (Command Prompt, PowerShell, or Git Bash)
+4. Verify: `node -v` and `git -v`
+
+</details>
+
+<details>
+<summary><b>🍎 macOS</b></summary>
+
+```bash
+# Install Homebrew (if not installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install Node.js and Git
+brew install node git
+```
+
+</details>
+
+<details>
+<summary><b>🐧 Linux (Ubuntu / Debian)</b></summary>
+
+```bash
+# Install Node.js v20 LTS via NodeSource
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs git
+```
+
+</details>
+
 ---
 
 ## 🚀 Quick Start
@@ -68,7 +111,7 @@ npm install
 npm link
 ```
 
-After `npm link`, the `qilinclaw` command is available globally — you can run it from anywhere.
+> 💡 `npm link` registers the `qilinclaw` command globally — after this step you can run it from **any directory**.
 
 ### 2. Launch
 
