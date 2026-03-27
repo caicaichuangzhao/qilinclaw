@@ -49,11 +49,11 @@ We've built most features with a **fully visual interface** — from creating ag
 
 | Software | Version | Required | Download |
 |----------|---------|----------|----------|
-| **Node.js** | **v20 LTS (recommended)** | ✅ Yes | [nodejs.org](https://nodejs.org/) |
+| **Node.js** | **v22 LTS (recommended)** or v24 LTS | ✅ Yes | [nodejs.org](https://nodejs.org/) |
 | **Git** | Any recent version | ✅ Yes | [git-scm.com](https://git-scm.com/) |
 | **Python** | 3.8+ | ❌ Optional | [python.org](https://www.python.org/) |
 
-> ⚠️ **Important:** We strongly recommend **Node.js v20 LTS**. Newer versions (v22/v24) may cause native module compilation errors on machines without C++ build tools. If you encounter `better-sqlite3` install errors, please switch to Node.js v20 LTS.
+> 💡 **Tip:** Go to [nodejs.org](https://nodejs.org/) and download the **LTS** version (left green button). Node.js v22 LTS is tested and works perfectly.
 >
 > **Note:** Python is only needed for local embedding models. Everything else works without it.
 
