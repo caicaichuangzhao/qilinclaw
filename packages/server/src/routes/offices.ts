@@ -231,13 +231,20 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
         res.write(`data: ${JSON.stringify({ type, ...payload })}\n\n`);
     };
 
-    const chat = async (systemPrompt: string, userMessage: string, agentConfigId?: string, currentAgentId?: string): Promise<string> => {
-        const messages = [
+    const chat = async (systemPrompt: string, userMessage: string, agentConfigId?: string, currentAgentId?: string): Promise<{ content: string; toolsUsed: string[]; toolCallCount: number }> => {
+        const messages: Array<{ role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_calls?: any[]; tool_call_id?: string; name?: string }> = [
             { role: 'system' as const, content: systemPrompt },
             { role: 'user' as const, content: userMessage },
         ];
 
+        // Track tool execution for structured reporting
+        const toolsUsed: string[] = [];
+        let toolCallCount = 0;
+
         let result;
+        let injectedTools: any[] | undefined = undefined;
+        const allowedToolNames = new Set<string>();
+
         if (currentAgentId) {
             let permissionMode = 'normal';
             let permissionRestrictions: string[] = [];
@@ -276,95 +283,45 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
                 finalSystemPrompt += '\n\n## 权限限制\n' + permissionRestrictions.join('\n');
             }
 
-            let injectedTools: any[] | undefined = undefined;
-            const allowedToolNames = new Set<string>();
-
             if (reqAgent) {
                 injectedTools = [];
                 const isCustom = permissionMode === 'custom';
+                const { AgentTools } = await import('../services/tools.js');
 
-                if (isCustom ? agentToolsConfig.read_file : true) {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'read_file'));
-                    allowedToolNames.add('read_file');
-                }
-                if (isCustom ? agentToolsConfig.write_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto')) {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'write_file'));
-                    allowedToolNames.add('write_file');
-                }
-                if (isCustom ? agentToolsConfig.edit_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto')) {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'edit_file'));
-                    allowedToolNames.add('edit_file');
-                }
-                if (isCustom ? agentToolsConfig.delete_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto')) {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'delete_file'));
-                    allowedToolNames.add('delete_file');
-                }
-                if (isCustom ? agentToolsConfig.plan_and_execute : true) {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'plan_and_execute'));
-                    allowedToolNames.add('plan_and_execute');
-                }
-                if (isCustom ? agentToolsConfig.exec_cmd : permissionMode === 'full-auto') {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'exec_cmd'));
-                    allowedToolNames.add('exec_cmd');
-                }
-                if (isCustom ? agentToolsConfig.manage_process : permissionMode === 'full-auto') {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'manage_process'));
-                    allowedToolNames.add('manage_process');
-                }
-                if (isCustom ? agentToolsConfig.web_search : true) {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'web_search'));
-                    allowedToolNames.add('web_search');
-                }
-                if (isCustom ? agentToolsConfig.web_fetch : true) {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'web_fetch'));
-                    allowedToolNames.add('web_fetch');
-                }
-                if (isCustom ? agentToolsConfig.browser_open : (permissionMode === 'normal' || permissionMode === 'auto-edit' || permissionMode === 'full-auto')) {
-                    const { AgentTools } = await import('../services/tools.js');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_open'));
-                    allowedToolNames.add('browser_open');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_click'));
-                    allowedToolNames.add('browser_click');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_type'));
-                    allowedToolNames.add('browser_type');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_press_key'));
-                    allowedToolNames.add('browser_press_key');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_refresh'));
-                    allowedToolNames.add('browser_refresh');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_screenshot'));
-                    allowedToolNames.add('browser_screenshot');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_scroll'));
-                    allowedToolNames.add('browser_scroll');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_wait'));
-                    allowedToolNames.add('browser_wait');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_select'));
-                    allowedToolNames.add('browser_select');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_hover'));
-                    allowedToolNames.add('browser_hover');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_go_back'));
-                    allowedToolNames.add('browser_go_back');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_go_forward'));
-                    allowedToolNames.add('browser_go_forward');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_close_tab'));
-                    allowedToolNames.add('browser_close_tab');
-                    injectedTools.push(AgentTools.find(t => t.function.name === 'browser_eval_js'));
-                    allowedToolNames.add('browser_eval_js');
+                // Simplified tool injection: iterate the standard tool list
+                const toolPermissions: Record<string, boolean> = {
+                    'read_file': isCustom ? agentToolsConfig.read_file : true,
+                    'write_file': isCustom ? agentToolsConfig.write_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto'),
+                    'edit_file': isCustom ? agentToolsConfig.edit_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto'),
+                    'delete_file': isCustom ? agentToolsConfig.delete_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto'),
+                    'plan_and_execute': isCustom ? agentToolsConfig.plan_and_execute : true,
+                    'exec_cmd': isCustom ? agentToolsConfig.exec_cmd : permissionMode === 'full-auto',
+                    'manage_process': isCustom ? agentToolsConfig.manage_process : permissionMode === 'full-auto',
+                    'web_search': isCustom ? agentToolsConfig.web_search : true,
+                    'web_fetch': isCustom ? agentToolsConfig.web_fetch : true,
+                };
+
+                for (const [name, allowed] of Object.entries(toolPermissions)) {
+                    if (allowed) {
+                        const tool = AgentTools.find(t => t.function.name === name);
+                        if (tool) { injectedTools.push(tool); allowedToolNames.add(name); }
+                    }
                 }
 
+                // Browser tools
+                if (isCustom ? agentToolsConfig.browser_open : (permissionMode !== 'plan')) {
+                    const browserToolNames = ['browser_open', 'browser_click', 'browser_type', 'browser_press_key', 'browser_refresh', 'browser_screenshot', 'browser_scroll', 'browser_wait', 'browser_select', 'browser_hover', 'browser_go_back', 'browser_go_forward', 'browser_close_tab', 'browser_eval_js'];
+                    for (const name of browserToolNames) {
+                        const tool = AgentTools.find(t => t.function.name === name);
+                        if (tool) { injectedTools.push(tool); allowedToolNames.add(name); }
+                    }
+                }
+
+                // Skills & MCP injection (same logic as before, condensed)
                 const { skillEngine } = await import('../services/skill-engine.js');
                 const selectedSkillIds: string[] = Array.isArray(agentToolsConfig.selected_skills) ? agentToolsConfig.selected_skills : [];
                 const shouldInjectAllSkills = permissionMode === 'full-auto';
-                const shouldInjectSkills = shouldInjectAllSkills || (selectedSkillIds.length > 0);
-                if (shouldInjectSkills) {
+                if (shouldInjectAllSkills || selectedSkillIds.length > 0) {
                     for (const skill of skillEngine.getEnabledSkills()) {
                         if (!shouldInjectAllSkills && !selectedSkillIds.includes(skill.id)) continue;
                         for (const action of skill.actions) {
@@ -377,14 +334,7 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
                                     }
                                 }
                                 const toolName = `skill_${skill.id}_${action.id}`.replace(/-/g, '_');
-                                injectedTools.push({
-                                    type: 'function',
-                                    function: {
-                                        name: toolName,
-                                        description: `${skill.name} - ${action.name}: ${action.description}`,
-                                        parameters: params
-                                    }
-                                });
+                                injectedTools.push({ type: 'function', function: { name: toolName, description: `${skill.name} - ${action.name}: ${action.description}`, parameters: params } });
                                 allowedToolNames.add(toolName);
                             }
                         }
@@ -394,21 +344,13 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
                 const { mcpService } = await import('../services/mcp-service.js');
                 const selectedMCPIds: string[] = Array.isArray(agentToolsConfig.selected_mcp) ? agentToolsConfig.selected_mcp : [];
                 const shouldInjectAllMCP = permissionMode === 'full-auto';
-                const shouldInjectMCP = shouldInjectAllMCP || (selectedMCPIds.length > 0);
-                if (shouldInjectMCP) {
+                if (shouldInjectAllMCP || selectedMCPIds.length > 0) {
                     for (const server of mcpService.getEnabledServers()) {
                         if (!shouldInjectAllMCP && !selectedMCPIds.includes(server.id)) continue;
                         const tools = mcpService.getAllTools().get(server.id) || [];
                         for (const mT of tools) {
                             const toolName = `mcp_${server.id}_${mT.name}`.replace(/-/g, '_');
-                            injectedTools.push({
-                                type: 'function',
-                                function: {
-                                    name: toolName,
-                                    description: `[MCP: ${server.name}] ${mT.description}`,
-                                    parameters: mT.inputSchema
-                                }
-                            });
+                            injectedTools.push({ type: 'function', function: { name: toolName, description: `[MCP: ${server.name}] ${mT.description}`, parameters: mT.inputSchema } });
                             allowedToolNames.add(toolName);
                         }
                     }
@@ -418,21 +360,66 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
                 if (injectedTools.length === 0) injectedTools = undefined;
             }
 
-            const messagesWithSystem = [
-                { role: 'system' as const, content: finalSystemPrompt },
-                ...messages.filter(m => m.role !== 'system')
-            ];
+            // ═══ Mini Agentic Loop (up to 8 iterations) ═══
+            // Instead of a one-shot call, we loop so the member can actually
+            // execute tools and return real results to the leader.
+            const MAX_LOOPS = 8;
+            for (let loop = 0; loop < MAX_LOOPS; loop++) {
+                result = await modelsManager.chat({
+                    messages,
+                    tools: injectedTools,
+                    tool_choice: injectedTools && injectedTools.length > 0 ? 'auto' : undefined
+                }, agentConfigId || configId);
 
-            result = await modelsManager.chat({
-                messages: messagesWithSystem,
-                tools: injectedTools,
-                tool_choice: injectedTools && injectedTools.length > 0 ? 'auto' : undefined
-            }, agentConfigId || configId);
+                // Check if the response contains tool_calls
+                if (result.tool_calls && result.tool_calls.length > 0) {
+                    // Add assistant message with tool_calls
+                    messages.push({
+                        role: 'assistant' as const,
+                        content: result.content || '',
+                        tool_calls: result.tool_calls,
+                    });
+
+                    // Execute each tool call
+                    const { executeAgentTool } = await import('../services/tools.js');
+                    for (const tc of result.tool_calls) {
+                        toolCallCount++;
+                        const toolName = tc.function?.name || 'unknown';
+                        if (!toolsUsed.includes(toolName)) toolsUsed.push(toolName);
+
+                        try {
+                            const toolResult = await executeAgentTool(
+                                toolName,
+                                typeof tc.function?.arguments === 'string' ? JSON.parse(tc.function.arguments) : (tc.function?.arguments || {}),
+                                { agentId: currentAgentId! }
+                            );
+                            messages.push({
+                                role: 'tool' as const,
+                                tool_call_id: tc.id,
+                                name: toolName,
+                                content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult),
+                            });
+                        } catch (err) {
+                            messages.push({
+                                role: 'tool' as const,
+                                tool_call_id: tc.id,
+                                name: toolName,
+                                content: `[Error] ${(err as Error).message}`,
+                            });
+                        }
+                    }
+                    // Continue loop — let the LLM see tool results and decide next action
+                    continue;
+                }
+
+                // No tool_calls → this is the final text answer
+                break;
+            }
         } else {
             result = await modelsManager.chat({ messages }, agentConfigId || configId);
         }
 
-        return result.content || '';
+        return { content: result?.content || '', toolsUsed, toolCallCount };
     };
 
     try {
@@ -454,12 +441,12 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
         const decompositionPrompt = leaderAgent.systemPrompt || '你是一位高效的项目组长。';
         const decompositionRequest = `你是「${leaderAgent.name}」，担任此办公室的组长。\n\n当前任务：\n${task}\n\n团队成员：\n${memberList}\n\n请将任务分解，为每位成员（或你自己）分配一个具体子任务。以如下JSON格式回复（只回复JSON，不要加markdown代码块）：\n{\n  "plan": "整体计划简述",\n  "assignments": [\n    { "member": "成员名称", "subtask": "子任务描述" }\n  ]\n}`;
 
-        const decompositionRaw = await chat(decompositionPrompt, decompositionRequest, leaderConfigId, leaderAgent.id);
+        const decompositionResult = await chat(decompositionPrompt, decompositionRequest, leaderConfigId, leaderAgent.id);
 
         let assignments: Array<{ member: string; subtask: string }> = [];
         let plan = '';
         try {
-            const parsed = JSON.parse(decompositionRaw.replace(/```json|```/g, '').trim());
+            const parsed = JSON.parse(decompositionResult.content.replace(/```json|```/g, '').trim());
             assignments = parsed.assignments || [];
             plan = parsed.plan || '';
         } catch {
@@ -490,13 +477,16 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
             let approved = false;
 
             for (let attempt = 1; attempt <= 2; attempt++) {
-                const memberSystemPrompt = memberAgent!.systemPrompt || '你是一名AI助手。';
+                const memberSystemPrompt = (memberAgent!.systemPrompt || '你是一名AI助手。') + '\n\n【办公室协作规范】你正在团队办公室中执行组长分配的子任务。请直接产出成果，不要回复"好的"、"收到"等确认语——你的每一次回复都会被组长审核，请确保回复内容就是你的最终交付物。如果子任务需要操作文件或搜索信息，请使用对应工具；如果是撰写、分析等文本工作，直接输出高质量内容即可。';
                 const memberRequest = attempt === 1
-                    ? `你是「${memberAgent!.name}」。\n\n你的子任务是：\n${assignment.subtask}\n\n请完成此任务并汇报详细成果。`
-                    : `你是「${memberAgent!.name}」。\n\n你上次提交的成果未获组长审核通过，反馈如下：\n${memberResult}\n\n请修改并重新提交成果。`;
+                    ? `你的子任务是：\n${assignment.subtask}\n\n请立即执行并输出完整成果（不要仅回复"收到"或"好的"）。`
+                    : `你上次提交的成果未获组长审核通过，反馈如下：\n${memberResult}\n\n请根据反馈修改后重新提交完整成果。`;
 
-                memberResult = await chat(memberSystemPrompt, memberRequest, memberConfigId, memberAgent.id);
-                send('member_result', { member: memberAgent!.name, subtask: assignment.subtask, result: memberResult, attempt });
+                const memberChatResult = await chat(memberSystemPrompt, memberRequest, memberConfigId, memberAgent.id);
+                memberResult = memberChatResult.content;
+                const memberToolsUsed = memberChatResult.toolsUsed;
+                const memberToolCallCount = memberChatResult.toolCallCount;
+                send('member_result', { member: memberAgent!.name, subtask: assignment.subtask, result: memberResult, toolsUsed: memberToolsUsed, toolCallCount: memberToolCallCount, attempt });
 
                 // Save member result to chat
                 await officeService._saveOfficeMessage(office.id, {
@@ -508,13 +498,17 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
                 // ── Step 3: Leader reviews this member's result ──────────
                 send('status', { step: 'review', message: `🔍 组长「${leaderAgent.name}」正在审核「${memberAgent!.name}」的成果...` });
 
-                const reviewRequest = `你是「${leaderAgent.name}」，担任组长。\n\n子任务：${assignment.subtask}\n\n成员「${memberAgent!.name}」提交的成果：\n${memberResult}\n\n请判断成果是否合格。只回复如下JSON格式（不要加markdown代码块）：\n{ "approved": true/false, "feedback": "反馈意见" }`;
-                const reviewRaw = await chat(decompositionPrompt, reviewRequest, leaderConfigId, leaderAgent.id);
+                // Inject neutral tool execution metadata — let the leader judge based on subtask nature
+                const toolReport = memberToolCallCount > 0
+                    ? `\n\n📊 执行报告：调用了 ${memberToolCallCount} 次工具 [${memberToolsUsed.join(', ')}]`
+                    : `\n\n📊 执行报告：本次未调用工具（纯文本产出）`;
+                const reviewRequest = `你是「${leaderAgent.name}」，担任组长。\n\n子任务：${assignment.subtask}\n\n成员「${memberAgent!.name}」提交的成果：\n${memberResult}${toolReport}\n\n审核要求：\n1. 根据子任务的**性质**来判断成果质量：如果子任务是撰写方案、分析、翻译等文本工作，不需要工具调用也完全合格；如果子任务需要操作文件、搜索网页、执行命令等，则应关注是否有对应的工具调用记录。\n2. 重点关注成果内容是否完整、是否切题、质量是否达标。\n3. 只回复如下JSON格式（不要加markdown代码块）：\n{ "approved": true/false, "feedback": "反馈意见" }`;
+                const reviewResult = await chat(decompositionPrompt, reviewRequest, leaderConfigId, leaderAgent.id);
 
                 let reviewApproved = true;
                 let reviewFeedback = '';
                 try {
-                    const reviewParsed = JSON.parse(reviewRaw.replace(/```json|```/g, '').trim());
+                    const reviewParsed = JSON.parse(reviewResult.content.replace(/```json|```/g, '').trim());
                     reviewApproved = reviewParsed.approved !== false;
                     reviewFeedback = reviewParsed.feedback || '';
                 } catch {
@@ -548,7 +542,8 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
         send('status', { step: 'summary', message: `📝 组长「${leaderAgent.name}」正在汇总最终报告...` });
 
         const summaryRequest = `你是「${leaderAgent.name}」，担任组长。\n\n原始任务：${task}\n\n各成员完成情况：\n${results.map(r => `• ${r.member}：${r.subtask}\n  成果：${r.result.slice(0, 300)}...`).join('\n\n')}\n\n请撰写一份完整的任务总结报告，并说明本次任务已全部完成，等待验收。`;
-        const finalSummary = await chat(decompositionPrompt, summaryRequest, leaderConfigId, leaderAgent.id);
+        const summaryResult = await chat(decompositionPrompt, summaryRequest, leaderConfigId, leaderAgent.id);
+        const finalSummary = summaryResult.content;
 
         // Save final summary to chat
         await officeService._saveOfficeMessage(office.id, {

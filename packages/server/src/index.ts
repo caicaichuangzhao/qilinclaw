@@ -88,7 +88,7 @@ import { usageTracker } from './services/usage-tracker.js';
 import { gatewayService } from './services/gateway.js';
 import { agentMemoryManager } from './services/agent-memory.js';
 import { extensionBridge } from './services/extension-bridge.js';
-import { ChatOrchestrator } from './services/chat-orchestrator.js';
+import { ChatOrchestrator } from './services/chat-orchestrator-ref.js';
 import { guiService } from './services/gui-service.js';
 
 import { modelsRoutes } from './routes/models.js';
