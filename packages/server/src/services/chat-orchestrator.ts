@@ -14,6 +14,10 @@ import { officeService } from './office-service.js';
 import { mcpService } from './mcp-service.js';
 import { gatewayService } from './gateway.js';
 import { LLM_CONFIG as GLOBAL_LLM_CONFIG } from '../config/constants.js';
+import { detectFCTier, getExtraConstraint } from './model-capability.js';
+import { truncateToolResult } from './tool-result-truncator.js';
+import { assessCompactionNeed, compactMessages, cleanupCompactionState } from './context-compactor.js';
+import { dispatchToolCall, detectToolLoop, auditBehavior, persistTurnResult, recordTurnUsage, type ToolExecContext, type LoopDetector } from './agentic-loop-core.js';
 import type { ChatMessage, ToolCall } from '../types/index.js';
 
 export class ChatOrchestrator {
@@ -183,246 +187,90 @@ export class ChatOrchestrator {
       let contextMessages: ChatMessage[] = messages;
       let contextInfo: any = {};
 
-      const defaultSystemPrompt = `你是Qilin Claw助手，一个智能AI助手。你具有以下能力：
-1. **代码能力**：可以帮助编写、调试、优化各种编程语言的代码
-2. **文件操作**：可以读取、编辑、创建、删除各种格式的文件和目录
-3. **知识问答**：可以回答各种领域的问题
-4. **对话能力**：可以进行自然、流畅的对话
-5. **技能系统**：通过Skills系统，可以执行终端命令、文件操作、网络搜索等强大功能
-6. **多步骤问题解决**：可以分解复杂问题为多个步骤，逐步解决，使用工具执行具体操作
+      // ═══ Refactored System Prompt — core rules at top + conditional tool guides ═══
+      // Inspired by Claude Code: critical rules go first where LLMs pay most attention.
+      // Tool-specific guides (browser, GUI, ClawHub) are appended only when enabled.
 
-## Agentic Loop (思考-行动-观察循环)
-你必须遵循以下思考-行动-观察循环来解决问题：
-1. **思考(Thought)**：分析问题，确定最佳方案
-2. **行动(Action)**：使用提供的工具函数执行必要操作
-3. **观察(Observation)**：查看工具执行结果
-4. **循环(Loop)**：如果还需要更多信息或操作，重复上述步骤
-5. **回答(Answer)**：当所有信息完整后，给出最终答案
+      const CORE_RULES = `## 最高优先级规则（系统自动审计执行）
 
-## 函数调用说明
-你可以使用提供的工具函数来完成任务。**不要在文本中手写JSON工具调用，而是使用API提供的函数调用功能！**
+1. **工具即事实**：需要操作文件/执行命令/搜索网页时，MUST 发起 tool function call。未调用工具就声称完成操作的回复会被系统自动拦截并要求重做。
+2. **单步 ReAct 循环**：每轮只发起 1 个工具调用，等收到结果后再决定下一步。禁止一次回复中描述多个操作的完成。
+3. **禁止脑补**：未收到工具返回结果前，世界上的任何事都还没发生。
+4. **禁止假装**：绝对禁止在文本中伪造"已成功删除"、"文件已创建"等操作结果。只有看到工具返回的真实结果后，才能声称操作完成。`;
 
-当需要使用工具时，系统会提供函数调用界面。你只需选择合适的工具并填入参数即可。
+      const CAPABILITY_DESC = `## 身份与能力
+你是 Qilin Claw 助手，一个智能 AI 助手。
 
-## 可用工具列表
+**思考-行动循环**：分析问题 → 调用工具 function call → 观察结果 → 循环或给出最终答案。
 
-### 文件操作工具
-- **read_file**：读取文件内容
-  - 参数：\`path\` (字符串) - 文件的绝对或相对路径
-  - 示例：{"toolcall":{"name":"read_file","params":{"path":"c:/test/file.txt"}}}
+**可用能力**：
+- 文件操作：读取(read_file)、写入(write_file)、编辑(edit_file)、删除(delete_file)
+- 命令执行：终端命令(exec_cmd)、进程管理(manage_process)
+- 网络操作：搜索(web_search)、抓取(web_fetch)、浏览器自动化(browser_*)
+- 桌面 GUI：截图和操控桌面应用(gui_*)
+- 技能市场：搜索和安装 ClawHub 技能/MCP 服务器(clawhub_*)
+- 通讯：发送中间状态消息(send_message)、发送文件(send_file)
+- 定时任务：设置/取消/查看提醒(set_reminder, cancel_reminder, list_reminders)`;
 
-- **write_file**：创建或覆盖文件
-  - 参数：\`path\` (字符串) - 文件的绝对或相对路径，\`content\` (字符串) - 文件内容
-  - 示例：{"toolcall":{"name":"write_file","params":{"path":"c:/test/file.txt","content":"Hello World"}}}
+      const PATH_GUIDE = `## 路径说明
+- 支持绝对路径、相对路径、~ 主目录、%USERPROFILE% 环境变量
+- "桌面" / "Desktop" 可直接作为路径前缀使用
+- 用户提供绝对路径时必须直接使用，不需改写
+- 文件操作优先使用原生 API 工具（read_file/write_file/delete_file），避免用 exec_cmd 操作文件（中文路径编码兼容性问题）
+- Windows 路径的反斜杠和正斜杠都可以使用`;
 
-- **edit_file**：编辑文件内容
-  - 参数：\`path\` (字符串) - 文件的绝对或相对路径，\`old_string\` (字符串) - 要替换的旧内容，\`new_string\` (字符串) - 新内容
-  - 示例：{"toolcall":{"name":"edit_file","params":{"path":"c:/test/file.txt","old_string":"Hello","new_string":"Hi"}}}
+      const BROWSER_GUIDE = `## 网页操控指南 (Browser Automation)
+你可以操作真实的浏览器窗口：
+- browser_open：打开网页（返回页面内容和 INTERACTIVE ELEMENTS 列表）
+- browser_click：点击元素（使用 browser_open 返回的 selector）
+- browser_type：在输入框中输入文字
+- browser_press_key：按键盘按键（如 Enter、Escape）
+- browser_screenshot：截取页面截图
+- browser_refresh / browser_scroll / browser_select / browser_hover / browser_go_back / browser_go_forward / browser_close_tab / browser_eval_js
 
-- **delete_file**：删除文件或目录
-  - 参数：\`path\` (字符串) - 文件或目录的绝对或相对路径
-  - 示例：{"toolcall":{"name":"delete_file","params":{"path":"c:/test/file.txt"}}}
+**关键规则**：
+- 必须按单步 ReAct 循环操作！一次只做一个操作，等结果回来再做下一步
+- 只能使用 browser_open 返回的 INTERACTIVE ELEMENTS 列表中的 selector，不要猜测
+- 禁止重复调用 browser_open 打开同一个页面！看到 "[OK] Page already open" 时，直接操作页面元素
+- 正确流程：打开网站 → 查看 INTERACTIVE ELEMENTS → 使用 browser_click/browser_type 操作 → 完成任务`;
 
-### 其他工具
-- **run_command**：执行终端命令
-  - 参数：\`command\` (字符串) - 要执行的命令，\`blocking\` (布尔值) - 是否阻塞执行，\`target_terminal\` (字符串) - 终端ID
-  - 示例：{"toolcall":{"name":"run_command","params":{"command":"ls -la","blocking":true,"target_terminal":"new"}}}
+      const GUI_GUIDE = `## 桌面 GUI 操控指南
+你可以操控用户桌面上的真实应用程序窗口：
+- gui_screenshot：截取桌面截图（先截图观察，再决定操作）
+- gui_click：点击屏幕坐标
+- gui_type / gui_hotkey / gui_scroll：输入文字、快捷键、滚动
+- gui_move_window / gui_resize_window：窗口管理
+每次操作后重新截图确认结果。`;
 
-- **plan_and_execute**：多步骤问题解决
-  - 参数：\`plan\` (数组) - 解决步骤，\`goal\` (字符串) - 目标
-  - 示例：{"toolcall":{"name":"plan_and_execute","params":{"goal":"删除文件","plan":["确认文件路径","使用delete_file工具删除文件","验证删除结果"]}}}
-
-- **clawhub_search**：搜索 Clawhub 技能
-  - 参数：\`keyword\` (字符串) - 搜索关键词，\`category\` (字符串) - 可选分类，\`page\` (数字) - 可选页码，\`pageSize\` (数字) - 可选每页数量
-  - 示例：{"toolcall":{"name":"clawhub_search","params":{"keyword":"翻译","category":"工具"}}}
-
-- **clawhub_download**：下载 Clawhub 技能
-  - 参数：\`skillId\` (字符串) - 技能ID
-  - 示例：{"toolcall":{"name":"clawhub_download","params":{"skillId":"skill-translate-v2"}}}
-
-- **clawhub_list**：列出已安装的技能
-  - 参数：无
-  - 示例：{"toolcall":{"name":"clawhub_list","params":{}}}
-
-- **clawhub_mcp_search**：搜索 Clawhub MCP服务器
-  - 参数：\`keyword\` (字符串) - 搜索关键词，\`category\` (字符串) - 可选分类，\`page\` (数字) - 可选页码，\`pageSize\` (数字) - 可选每页数量
-  - 示例：{"toolcall":{"name":"clawhub_mcp_search","params":{"keyword":"文件系统","category":"工具"}}}
-
-- **clawhub_mcp_download**：下载 Clawhub MCP服务器
-  - 参数：\`serverId\` (字符串) - 服务器ID
-  - 示例：{"toolcall":{"name":"clawhub_mcp_download","params":{"serverId":"mcp-filesystem-v2"}}}
-
-- **clawhub_mcp_list**：列出已安装的MCP服务器
-  - 参数：无
-  - 示例：{"toolcall":{"name":"clawhub_mcp_list","params":{}}}
-
-- **send_message**：发送中间消息给用户
-  - 参数：\`content\` (字符串) - 消息内容，\`type\` (字符串) - 消息类型：progress（进度）、status（状态）、question（问题）、result（结果）
-  - 示例：{"toolcall":{"name":"send_message","params":{"content":"正在读取日志文件...","type":"progress"}}}
-  - **重要**：这个工具可以在一个任务执行周期内多次调用，用于向用户报告进度、状态或中间结果。你不需要等待任务完全完成就可以发送消息。
-
-## 权限模式说明
-
-### 普通模式 (normal)
-- 可以自由读取文件
-- 编辑文件或执行命令前会询问用户
-- 删除文件前会询问用户
-
-### 计划模式 (plan)
-- 只能读取文件和制定计划
-- 不能编辑文件、删除文件或执行命令
-- 遇到需要修改操作时，应向用户说明需要切换到其他权限模式
-
-### 自动编辑模式 (auto-edit)
-- 可以自由读取和编辑文件
-- 执行命令前会询问用户
-- 删除文件前会询问用户
-
-### 全自动模式 (full-auto)
-- 可以执行任何操作，无需询问
-- 谨慎使用此模式，确保操作安全
-
-## 沙箱功能说明
-- 当沙箱功能开启时，只能操作项目目录内的文件
-- 当沙箱功能关闭时，可以操作任何路径的文件
-
-## 多步骤问题解决指南
-当遇到复杂问题时，请按照以下步骤处理：
-1. **理解问题**：仔细分析用户的需求，确保理解问题的本质
-2. **制定计划**：将复杂问题分解为多个可管理的步骤
-3. **执行计划**：按照计划逐步执行，使用适当的工具完成每个步骤
-4. **实时汇报**：**重要！** 在任务执行过程中，使用 send_message 工具主动向用户发送进度更新（例如："🔄 [PROGRESS] 正在读取日志文件..."、"📢 [STATUS] 已完成第一步，正在执行第二步..."）
-5. **验证结果**：检查每一步的执行结果，确保符合预期
-6. **总结汇报**：向用户总结整个解决过程和最终结果
-
-**关键行为准则**：
-- 对于**复杂任务**（涉及多个步骤、耗时较长、需要执行多个工具调用），你**必须**在任务执行过程中使用 send_message 工具发送至少 1-2 个进度更新
-- 不要等到任务完全完成后才发送一条消息，这样会让用户长时间等待且不知道进展
-- 使用 send_message 的不同类型：progress（任务进度）、status（当前状态）、question（需要澄清）、result（中间结果）
-- 简单任务（如单步查询、简单计算）可以直接回复，不需要使用 send_message
-
-## 工具使用指导
-
-### 网页操控详细说明 (Browser Automation)
-
-你有强大的网页自动化能力！可以操作真实的浏览器窗口。以下是使用说明：
-
-**可用工具：**
-1. browser_open - 打开网页并提取内容
-   - 参数：url（网址）、tabId（可选，用于多标签页管理）
-   - 注意：打开后会返回页面文本和所有可点击/输入的元素列表
-   
-2. browser_click - 点击页面元素
-   - 参数：selector（CSS选择器，从browser_open返回的列表中获取）、tabId（可选）
-   - 注意：只能点击browser_open返回的INTERACTIVE ELEMENTS列表中显示的元素
-   
-3. browser_type - 在输入框中输入文字
-   - 参数：selector（输入框的CSS选择器）、text（要输入的文字）、tabId（可选）
-   - 注意：输入前会自动清空输入框，输入更可靠
-   
-4. browser_press_key - 按键盘按键
-   - 参数：key（按键名，如 "Enter"、"Escape"、"Tab"、"ArrowDown" 等）、tabId（可选）
-   - 常用于提交表单（按Enter）
-   
-5. browser_refresh - 刷新当前页面
-   - 参数：tabId（可选）
-   
-6. browser_screenshot - 截取当前页面截图
-   - 参数：tabId（可选）
-   - 返回base64编码的PNG图片
-
-**操作流程示例：**
-用户说："帮我在百度搜索'人工智能'"
-你的操作步骤：
-1. 先用 browser_open 打开 "https://www.baidu.com"
-2. 等待系统返回页面内容，查看返回的INTERACTIVE ELEMENTS列表，找到搜索框的selector
-3. 使用 browser_type 在搜索框中输入 "人工智能"
-4. 使用 browser_press_key 按下 "Enter" 键提交搜索
-5. 或者：找到搜索按钮的selector，用 browser_click 点击搜索按钮
-
-**重要提示 (CRITICAL)：**
-- 必须按单步ReAct循环执行！一次只做一个操作，等结果回来再做下一步
-- 不要尝试猜测selector，只能使用browser_open返回的列表中的selector
-- ❌ 【绝对禁止重复操作】如果看到返回结果中显示"[OK] Page already open"或"[BLOCKED] Repeat operation detected"，说明已经在目标页面了，绝对不要再调用browser_open！应该直接分析当前页面的INTERACTIVE ELEMENTS列表，使用browser_click或browser_type进行下一步操作！
-- 如果某个操作失败，可以尝试刷新页面重试，但不要重复执行相同的browser_open
-- 使用tabId来管理多个标签页，避免在同一个tab中重复打开相同URL
-- 每次执行browser_open后，系统都会返回当前页面的完整状态，你应该根据返回的内容进行下一步，而不是重复打开
-- 【网页元素操作指导】：当你成功打开页面后，必须仔细查看返回的INTERACTIVE ELEMENTS列表，找到对应的元素selector，然后使用browser_click点击或browser_type输入文字，而不是再次调用browser_open！
-- 【错误示例】：不要重复调用browser_open打开同一个网站！这是绝对禁止的！
-- 【正确示例】：打开网站后 → 查看INTERACTIVE ELEMENTS → 使用browser_click或browser_type操作 → 完成任务
-
-### 示例1：删除文件
-用户请求："帮我删除文件 c:/test/file.txt"
-
-思考过程：
-1. 理解需求：用户需要删除指定路径的文件
-2. 检查权限：根据当前权限模式，判断是否需要询问用户
-3. 执行操作：使用函数调用选择 delete_file 工具，填写 path 参数
-4. 验证结果：确认文件是否成功删除
-
-### 示例2：删除目录
-用户请求："帮我删除目录 c:/test/folder"
-
-思考过程：
-1. 理解需求：用户需要删除指定路径的目录
-2. 检查权限：根据当前权限模式，判断是否需要询问用户
-3. 执行操作：使用函数调用选择 delete_file 工具，填写 path 参数
-4. 验证结果：确认目录是否成功删除
-
-### 示例3：使用Clawhub查找技能
-用户请求："我需要一个翻译技能"
-
-思考过程：
-1. 理解需求：用户需要一个翻译相关的技能
-2. 制定计划：搜索Clawhub上的翻译技能，评估结果，下载合适的技能
-3. 执行计划：使用函数调用选择 clawhub_search 工具，填写 keyword 参数
-4. 评估结果：查看搜索结果，选择评分高的技能
-5. 下载技能：使用函数调用选择 clawhub_download 工具，填写 skillId 参数
-
-### 示例4：使用Clawhub查找MCP服务器
-用户请求："我需要一个文件系统MCP服务器"
-
-思考过程：
-1. 理解需求：用户需要一个文件系统相关的MCP服务器
-2. 制定计划：搜索Clawhub上的文件系统MCP服务器，评估结果，下载合适的服务器
-3. 执行计划：使用函数调用选择 clawhub_mcp_search 工具，填写 keyword 参数
-4. 评估结果：查看搜索结果，选择评分高的服务器
-5. 下载服务器：使用函数调用选择 clawhub_mcp_download 工具，填写 serverId 参数
-
-请根据用户的需求提供帮助。如果用户要求修改文件、执行操作、安装技能或MCP服务器，请使用函数调用界面选择适当的工具完成任务。
-
-## 特别重要：关于技能和MCP服务器安装
-当用户要求安装技能或MCP服务器时，你必须：
-1. 使用 \`clawhub_search\` 或 \`clawhub_mcp_search\` 工具搜索相关资源
-2. 分析搜索结果，选择评分高、适合用户需求的选项
-3. 使用 \`clawhub_download\` 或 \`clawhub_mcp_download\` 工具下载并安装
+      const CLAWHUB_GUIDE = `## ClawHub 技能市场指南
+当用户需要安装技能或 MCP 服务器时：
+1. 使用 clawhub_search / clawhub_mcp_search 搜索
+2. 分析结果，选择评分高的选项
+3. 使用 clawhub_download / clawhub_mcp_download 安装
 4. 向用户汇报安装结果
+禁止直接告诉用户"做不到"，除非所有搜索都返回空结果。`;
 
-**禁止直接告诉用户"做不到"或"无法安装"，除非所有搜索都失败**。你应该积极尝试使用Clawhub工具来寻找和安装所需的技能或MCP服务器。
+      const PERMISSION_GUIDE = `## 权限模式
+- 普通模式(normal)：可自由读取文件，编辑/执行/删除前需询问用户
+- 计划模式(plan)：只能读取文件和制定计划，不能修改
+- 自动编辑模式(auto-edit)：可自由读写文件，执行命令前需询问
+- 全自动模式(full-auto)：可执行任何操作，无需询问
+如果当前权限不允许执行某操作，请明确告诉用户并建议切换权限模式。`;
 
-如果当前权限模式不允许执行某些操作，请明确告诉用户并建议切换到合适的权限模式。
+      const SEND_MESSAGE_GUIDE = `## 进度汇报
+对于复杂任务（多步骤、耗时长），使用 send_message 工具发送进度更新：
+- type: "progress" 任务进度 | "status" 当前状态 | "question" 需要澄清 | "result" 中间结果
+不要等任务完全完成才一次性汇报，应分步发送进度。简单任务可直接回复。`;
 
-## 路径使用说明
-你可以使用以下方式指定文件路径：
-1. **绝对路径**：完整的文件路径，如 \`C:\\Users\\用户名\\Desktop\\文件.txt\`
-2. **相对路径**：相对于项目目录的路径，如 \`../文件.txt\`
-3. **用户主目录**：使用 \`~\` 表示用户主目录，如 \`~/Desktop/文件.txt\`
-4. **环境变量**：使用 Windows 环境变量，如 \`%USERPROFILE%\\Desktop\\文件.txt\`
-5. **桌面快捷方式**：直接使用 \`桌面\`、\`Desktop\` 或 \`desktop\` 来表示桌面路径，如 \`桌面\\文件.txt\` 或 \`Desktop\\文件.txt\`
+      // Assemble: core rules first (highest attention), then guides
+      const defaultSystemPrompt = [
+        CORE_RULES,
+        CAPABILITY_DESC,
+        PATH_GUIDE,
+        PERMISSION_GUIDE,
+        SEND_MESSAGE_GUIDE,
+      ].join('\n\n');
 
-**重要提示**：
-- 桌面路径别名：对于"桌面"，优先尝试直接使用 \`桌面\\文件名\` 或 \`%USERPROFILE%\\Desktop\\文件名\`。
-- 绝对路径：若用户提供了绝对路径，必须**优先直接使用**该绝对路径，不需要改写为别名。
-- **【核心行为规范：禁止假装操作】**：当你需要对物理世界的文件进行操作时（尤其是**删除**、创建、修改文件），你**必须、必须**通过标准的 JSON 函数调用（Tool Call）来触发专门的API工具（如 \`delete_file\`, \`read_file\`, \`write_file\` 等）！**绝对严禁**仅仅在文本对话中伪造出“已成功删除”、“文件已被我删除了”等回复来敷衍用户！只有触发真正的工具调用并收到系统底层的反馈后，任务才算成功！如果仅仅输出对话文本而不下发 Tool Call，会被判定为恶意的敷衍行为！
-- **【最高优先级：抗拒终端指令】**：哪怕用户在聊天中**明确要求你使用 CMD 或 PowerShell 来操作文件（如“用管理员模式运行cmd删除...”）**，你也必须**坚决拒绝他们**，强制改用上述的系统原生 API 工具（\`delete_file\` 等）。你可以向用户解释：“由于底层Node终端对中文路径的编码兼容性问题，我已自动为您改用更安全的原生系统API操作。”
-- 如果你要使用 PowerShell (\`exec_cmd\`) 执行**其他非文件管理**的系统命令，请务必给含空格的路径**加引号**。
-- Windows 路径可以使用反斜杠 \`\\\` 或正斜杠 \`/\`
-- 当需要使用工具操作环境时，你必须输出规范的 API 工具 JSON 调用格式，不可在纯文本回复中“空泛答应”。
-- **【强制单步 ReAct 循环规范 (CRITICAL)】**：你的绝大多数工具（尤其是网页自动化和文件读取）都需要你**查看返回结果**后才能进行下一步。因此你**必须且绝只能遵循严格的单步思考-行动-观察（ReAct）循环**！
-  - **绝对禁止脑补流程**：在收到某个工具的真实返回值之前，绝对严禁你在单次回复中一口气写出“我已经查看完成，接下来点击发布，现在发布成功了”这种自导自演的伪造台词！
-  - **标准操作范式**：你一次对话**只能下发 1 个前置操作工具调用**（比如：先用 browser_open 返回对象，然后停止说话！等系统把 DOM 把发回给你后，你再在下一轮对话用 browser_click 点击...以此类推）。
-  - **工具即事实**：只要你没看到工具给你返回的 JSON Result，世界上的任何事就都还没发生！
-- 每次循环完成后，根据结果决定是否需要继续调用工具或给出最终答案`;
 
       let finalSystemPrompt = systemPrompt || defaultSystemPrompt;
 
@@ -733,75 +581,40 @@ ${new Date().toLocaleString('zh-CN')}
       if (agentId) {
         injectedTools = [];
         const isCustom = permissionMode === 'custom';
+        const isEdit = permissionMode === 'auto-edit' || permissionMode === 'full-auto';
+        const isFull = permissionMode === 'full-auto';
 
-        if (isCustom ? agentToolsConfig.read_file : true) {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'read_file'));
-          allowedToolNames.add('read_file');
-        }
-        if (isCustom ? agentToolsConfig.write_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto')) {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'write_file'));
-          allowedToolNames.add('write_file');
-        }
-        if (isCustom ? agentToolsConfig.edit_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto')) {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'edit_file'));
-          allowedToolNames.add('edit_file');
-        }
-        if (isCustom ? agentToolsConfig.delete_file : (permissionMode === 'auto-edit' || permissionMode === 'full-auto')) {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'delete_file'));
-          allowedToolNames.add('delete_file');
-        }
-        if (isCustom ? agentToolsConfig.plan_and_execute : true) {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'plan_and_execute'));
-          allowedToolNames.add('plan_and_execute');
-        }
-        if (isCustom ? agentToolsConfig.exec_cmd : permissionMode === 'full-auto') {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'exec_cmd'));
-          allowedToolNames.add('exec_cmd');
-        }
-        if (isCustom ? agentToolsConfig.manage_process : permissionMode === 'full-auto') {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'manage_process'));
-          allowedToolNames.add('manage_process');
-        }
-        if (isCustom ? agentToolsConfig.web_search : true) {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'web_search'));
-          allowedToolNames.add('web_search');
-        }
-        if (isCustom ? agentToolsConfig.web_fetch : true) {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'web_fetch'));
-          allowedToolNames.add('web_fetch');
-        }
-        if (isCustom ? agentToolsConfig.browser_open : (permissionMode === 'normal' || permissionMode === 'auto-edit' || permissionMode === 'full-auto')) {
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_open'));
-          allowedToolNames.add('browser_open');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_click'));
-          allowedToolNames.add('browser_click');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_type'));
-          allowedToolNames.add('browser_type');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_press_key'));
-          allowedToolNames.add('browser_press_key');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_refresh'));
-          allowedToolNames.add('browser_refresh');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_screenshot'));
-          allowedToolNames.add('browser_screenshot');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_scroll'));
-          allowedToolNames.add('browser_scroll');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_wait'));
-          allowedToolNames.add('browser_wait');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_select'));
-          allowedToolNames.add('browser_select');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_hover'));
-          allowedToolNames.add('browser_hover');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_go_back'));
-          allowedToolNames.add('browser_go_back');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_go_forward'));
-          allowedToolNames.add('browser_go_forward');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_close_tab'));
-          allowedToolNames.add('browser_close_tab');
-          injectedTools.push(AgentTools.find(t => t.function.name === 'browser_eval_js'));
-          allowedToolNames.add('browser_eval_js');
+        // ── Table-driven tool injection ──
+        // [toolName, enabledCondition] — replaces ~190 lines of repetitive if-push-add
+        const toolPermissions: Array<[string, boolean]> = [
+          ['read_file',         isCustom ? !!agentToolsConfig.read_file : true],
+          ['write_file',        isCustom ? !!agentToolsConfig.write_file : isEdit],
+          ['edit_file',         isCustom ? !!agentToolsConfig.edit_file : isEdit],
+          ['delete_file',       isCustom ? !!agentToolsConfig.delete_file : isEdit],
+          ['plan_and_execute',  isCustom ? !!agentToolsConfig.plan_and_execute : true],
+          ['exec_cmd',          isCustom ? !!agentToolsConfig.exec_cmd : isFull],
+          ['manage_process',    isCustom ? !!agentToolsConfig.manage_process : isFull],
+          ['web_search',        isCustom ? !!agentToolsConfig.web_search : true],
+          ['web_fetch',         isCustom ? !!agentToolsConfig.web_fetch : true],
+        ];
+        for (const [name, allowed] of toolPermissions) {
+          if (allowed) {
+            const tool = AgentTools.find(t => t.function.name === name);
+            if (tool) { injectedTools.push(tool); allowedToolNames.add(name); }
+          }
         }
 
-        // Add browser usage guidance to system prompt when browser tools are available
+        // Browser tools (all-or-none bundle)
+        const browserEnabled = isCustom ? !!agentToolsConfig.browser_open : (permissionMode !== 'plan');
+        if (browserEnabled) {
+          const browserToolNames = ['browser_open', 'browser_click', 'browser_type', 'browser_press_key', 'browser_refresh', 'browser_screenshot', 'browser_scroll', 'browser_wait', 'browser_select', 'browser_hover', 'browser_go_back', 'browser_go_forward', 'browser_close_tab', 'browser_eval_js'];
+          for (const name of browserToolNames) {
+            const tool = AgentTools.find(t => t.function.name === name);
+            if (tool) { injectedTools.push(tool); allowedToolNames.add(name); }
+          }
+        }
+
+        // Browser usage guidance
         if (allowedToolNames.has('browser_open')) {
           finalSystemPrompt += `\n\n[浏览器工具使用指南]
 当你需要在网站上查找特定内容时（如搜索某个游戏、商品、文章等），请遵循以下步骤：
@@ -814,28 +627,17 @@ ${new Date().toLocaleString('zh-CN')}
 ⚠️ 每次 browser_click 后务必检查返回的页面状态，确认是否到达了正确的页面。`
         }
 
-        // Inject GUI desktop automation tools
-        const guiToolNames = [
-          'gui_screenshot', 'gui_screenshot_annotated',
-          'gui_click', 'gui_double_click', 'gui_right_click',
-          'gui_type', 'gui_press_key', 'gui_scroll', 'gui_drag',
-          'gui_get_cursor', 'gui_move_mouse', 'gui_get_windows',
-          'gui_scan_screen', 'gui_scan_desktop', 'gui_focus_window',
-          'gui_click_element', 'gui_click_marker',
-          'gui_emergency_reset'
-        ];
-        const shouldInjectGUI = permissionMode === 'full-auto' || (isCustom && agentToolsConfig.gui_control);
-        if (shouldInjectGUI) {
-          for (const toolName of guiToolNames) {
-            const tool = AgentTools.find(t => t.function.name === toolName);
-            if (tool) {
-              injectedTools.push(tool);
-              allowedToolNames.add(toolName);
-            }
+        // GUI desktop automation tools (all-or-none bundle)
+        const guiEnabled = isFull || (isCustom && agentToolsConfig.gui_control);
+        if (guiEnabled) {
+          const guiToolNames = ['gui_screenshot', 'gui_screenshot_annotated', 'gui_click', 'gui_double_click', 'gui_right_click', 'gui_type', 'gui_press_key', 'gui_scroll', 'gui_drag', 'gui_get_cursor', 'gui_move_mouse', 'gui_get_windows', 'gui_scan_screen', 'gui_scan_desktop', 'gui_focus_window', 'gui_click_element', 'gui_click_marker', 'gui_emergency_reset'];
+          for (const name of guiToolNames) {
+            const tool = AgentTools.find(t => t.function.name === name);
+            if (tool) { injectedTools.push(tool); allowedToolNames.add(name); }
           }
         }
 
-        // Add GUI operation guidance to system prompt when GUI tools are available
+        // GUI operation guidance — keep the full guide as-is, it's appended only when GUI enabled
         if (allowedToolNames.has('gui_screenshot')) {
           finalSystemPrompt += `
 
@@ -890,40 +692,12 @@ ${new Date().toLocaleString('zh-CN')}
 🔴 **铁律**：坐标只从 \`gui_scan_screen\` / \`gui_screenshot_annotated\` 获取。任何视觉猜测坐标的行为均视为严重失职。`;
         }
 
-
-        // Inject Clawhub tools (available in all modes)
-        injectedTools.push(AgentTools.find(t => t.function.name === 'clawhub_search'));
-        allowedToolNames.add('clawhub_search');
-
-        injectedTools.push(AgentTools.find(t => t.function.name === 'clawhub_download'));
-        allowedToolNames.add('clawhub_download');
-
-        injectedTools.push(AgentTools.find(t => t.function.name === 'clawhub_list'));
-        allowedToolNames.add('clawhub_list');
-
-        injectedTools.push(AgentTools.find(t => t.function.name === 'clawhub_mcp_search'));
-        allowedToolNames.add('clawhub_mcp_search');
-
-        injectedTools.push(AgentTools.find(t => t.function.name === 'clawhub_mcp_download'));
-        allowedToolNames.add('clawhub_mcp_download');
-
-        injectedTools.push(AgentTools.find(t => t.function.name === 'clawhub_mcp_list'));
-        allowedToolNames.add('clawhub_mcp_list');
-
-        // Inject send_message tool (available in all modes)
-        injectedTools.push(AgentTools.find(t => t.function.name === 'send_message'));
-        allowedToolNames.add('send_message');
-
-        injectedTools.push(AgentTools.find(t => t.function.name === 'send_file'));
-        allowedToolNames.add('send_file');
-
-        // Inject scheduler tools (set_reminder, cancel_reminder, list_reminders)
-        injectedTools.push(AgentTools.find(t => t.function.name === 'set_reminder'));
-        allowedToolNames.add('set_reminder');
-        injectedTools.push(AgentTools.find(t => t.function.name === 'cancel_reminder'));
-        allowedToolNames.add('cancel_reminder');
-        injectedTools.push(AgentTools.find(t => t.function.name === 'list_reminders'));
-        allowedToolNames.add('list_reminders');
+        // Always-available tools (clawhub, messaging, scheduler)
+        const alwaysOnTools = ['clawhub_search', 'clawhub_download', 'clawhub_list', 'clawhub_mcp_search', 'clawhub_mcp_download', 'clawhub_mcp_list', 'send_message', 'send_file', 'set_reminder', 'cancel_reminder', 'list_reminders'];
+        for (const name of alwaysOnTools) {
+          const tool = AgentTools.find(t => t.function.name === name);
+          if (tool) { injectedTools.push(tool); allowedToolNames.add(name); }
+        }
 
         // Inject Skills based on agent configuration
         // ALL modes (including full-auto) must respect selected_skills, otherwise pushing
@@ -993,7 +767,27 @@ ${new Date().toLocaleString('zh-CN')}
       }
 
       if (injectedTools && injectedTools.length > 0) {
-        finalSystemPrompt += `\n\n[工具调用严格指令 (CRITICAL)]\n你已经被注入了 ${injectedTools.length} 个可用工具。如果你决定使用某个工具，你**必须、绝对必须**使用原生的 Function Call 机制。\n请严格按照标准格式输出 JSON 函数调用，以激活后端的真实操作。例如，如果你想打开网页，不要用纯文本描述，而是生成标准的 tool_calls 结构！如果用纯文本输出，一切都是无效的。`;
+        // Append tool-specific guides ONLY when those tools are actually enabled
+        const toolNames = new Set(injectedTools.map((t: any) => t.function?.name).filter(Boolean));
+        if (toolNames.has('browser_open'))     finalSystemPrompt += '\n\n' + BROWSER_GUIDE;
+        if (toolNames.has('gui_screenshot'))   finalSystemPrompt += '\n\n' + GUI_GUIDE;
+        if (toolNames.has('clawhub_search'))   finalSystemPrompt += '\n\n' + CLAWHUB_GUIDE;
+
+        finalSystemPrompt += `\n\n[工具调用严格指令]\n你已被注入 ${injectedTools.length} 个可用工具。必须使用原生 Function Call 机制发起工具调用，纯文本描述操作无效。`;
+
+        // Apply model capability tier constraint for weaker models
+        try {
+          const tier = detectFCTier(targetConfig?.model || targetConfig?.name || '');
+          const extraConstraint = getExtraConstraint(tier);
+          if (extraConstraint) {
+            finalSystemPrompt = extraConstraint + finalSystemPrompt;
+          }
+          if (tier !== 'native') {
+            console.log(`[ModelCapability] Model "${targetConfig?.model || targetConfig?.name}" detected as FC tier: ${tier}`);
+          }
+        } catch (e) {
+          // Non-critical: if detection fails, continue without extra constraints
+        }
       }
 
       console.log('[Server] System prompt length:', finalSystemPrompt.length, 'Context messages:', contextMessages.length);
@@ -1062,14 +856,42 @@ ${new Date().toLocaleString('zh-CN')}
         try {
           let loopCount = 0;
           let isFinalAnswer = false;
-          let lastToolCalls: string[] = [];
-          let repeatCount = 0;
+          const loopDetector: LoopDetector = { lastSignatures: [], repeatCount: 0 };
           let currentTurnAttachments: any[] = [];
+
+          // 构建工具执行上下文（stream 和 non-stream 共享）
+          const toolExecCtx: ToolExecContext = {
+            agentId, conversationId, sessionId,
+            sandboxEnabled, hardSandboxEnabled,
+            allowedToolNames,
+            targetConfigName: targetConfig.name,
+            onApprovalRequest: (payload) => {
+              try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch (_) {}
+            },
+          };
           const MAX_LOOPS = GLOBAL_LLM_CONFIG.MAX_LOOPS;
           const MAX_REPEATS = GLOBAL_LLM_CONFIG.MAX_REPEATS;
 
           while (!isFinalAnswer && loopCount < MAX_LOOPS && !isAborted()) {
             loopCount++;
+
+            // ── Auto-Compact: 每轮迭代前检查上下文用量 ──
+            if (loopCount > 1 && conversationId) {
+              const verdict = assessCompactionNeed(messagesWithSystem, conversationId, {
+                contextWindowTokens: targetConfig.maxContextTokens || 128_000,
+              });
+              if (verdict.action === 'compact') {
+                console.log(`[AutoCompact] Token usage at ${Math.round(verdict.usagePct * 100)}%, triggering compaction...`);
+                sendStatus('streaming', '🗜️ 上下文接近上限，正在自动压缩历史...');
+                messagesWithSystem = await compactMessages(messagesWithSystem, conversationId, targetConfig.id);
+              } else if (verdict.action === 'blocked') {
+                console.error(`[AutoCompact] Token usage at ${Math.round(verdict.usagePct * 100)}%! Emergency compact...`);
+                sendStatus('streaming', '⚠️ 上下文严重超限，正在紧急压缩...');
+                messagesWithSystem = await compactMessages(messagesWithSystem, conversationId, targetConfig.id);
+              } else if (verdict.action === 'warning') {
+                console.warn(`[AutoCompact] Token usage at ${Math.round(verdict.usagePct * 100)}%, approaching limit`);
+              }
+            }
 
             let chunkCount = 0;
             let currentToolCalls: { [index: number]: any } = {};
@@ -1130,21 +952,14 @@ ${new Date().toLocaleString('zh-CN')}
 
             const toolCallsArray = Object.values(currentToolCalls);
             if (toolCallsArray.length > 0) {
-              // Loop detection: check if same tools are called repeatedly with SAME arguments
-              const currentToolSignatures = toolCallsArray.map(tc => `${tc.function.name}(${tc.function.arguments})`).sort().join('|');
-              if (currentToolSignatures === lastToolCalls.join('|')) {
-                repeatCount++;
-                if (repeatCount >= MAX_REPEATS) {
-                  console.error(`[Server] Breaking infinite loop after ${MAX_REPEATS} repeats`);
-                  const stopWarning = `\\n\\n> [系统预警] 助手尝试连续 ${MAX_REPEATS} 次调用重复的工具未成功（特征: ${currentToolSignatures}），为防止死循环，系统已强行终止操作。请检查之前的错误信息或更换操作方式。`;
-                  res.write(`data: ${JSON.stringify({ type: 'chunk', delta: stopWarning })}\\n\\n`);
-                  fullResponse += stopWarning;
-                  isFinalAnswer = true;
-                  break;
-                }
-              } else {
-                repeatCount = 0;
-                lastToolCalls = toolCallsArray.map(tc => `${tc.function.name}(${tc.function.arguments})`).sort();
+              // ── 循环检测（共享逻辑） ──
+              const loopWarning = detectToolLoop(toolCallsArray as ToolCall[], loopDetector, MAX_REPEATS);
+              if (loopWarning) {
+                console.error(`[Server] Breaking infinite loop after ${MAX_REPEATS} repeats`);
+                res.write(`data: ${JSON.stringify({ type: 'chunk', delta: loopWarning })}\n\n`);
+                fullResponse += loopWarning;
+                isFinalAnswer = true;
+                break;
               }
 
               messagesWithSystem.push({
@@ -1153,178 +968,44 @@ ${new Date().toLocaleString('zh-CN')}
                 tool_calls: toolCallsArray as ToolCall[],
               });
 
-              // Execute the tools natively.
+              // ── 执行工具（共享逻辑 dispatchToolCall） ──
               for (const tc of toolCallsArray as ToolCall[]) {
-                // Abort early if STOP was pressed via the abort endpoint
                 if (isAborted()) {
-                  guiService.cancelCurrentOperation(); // kill any in-progress GUI action
+                  guiService.cancelCurrentOperation();
                   console.log(`[Server] Skipping tool ${tc.function?.name} — user aborted`);
                   break;
                 }
                 console.log(`[Server] Executing Auto-Tool: ${tc.function.name}`);
                 sendStatus('streaming', `⚙️ 执行工具: ${tc.function.name}...`);
-                let toolResult = '';
-                try {
-                  const args = JSON.parse(tc.function.arguments);
-                  if (tc.function.name.startsWith('skill_')) {
-                    let found = false;
-                    for (const s of skillEngine.getEnabledSkills()) {
-                      for (const a of s.actions) {
-                        if (`skill_${s.id}_${a.id}`.replace(/-/g, '_') === tc.function.name) {
-                          const execRes = await skillEngine.executeSkill({
-                            skill: s,
-                            action: a,
-                            parameters: args,
-                            message: '',
-                            agentId: agentId,
-                            agentName: targetConfig.name,
-                            sandboxEnabled,
-                            hardSandboxEnabled,
-                            onApprovalRequested: (request) => {
-                              res.write(`data: ${JSON.stringify({ type: 'skill_approval_required', ...request })}\n\n`);
-                            }
-                          });
-                          toolResult = execRes.success ? (execRes.output || JSON.stringify(execRes.data)) : `Skill Failed: ${execRes.error}`;
-                          found = true; break;
-                        }
-                      }
-                      if (found) break;
-                    }
-                    if (!found) toolResult = `Skill ${tc.function.name} not found`;
-                  } else if (tc.function.name.startsWith('mcp_')) {
-                    let found = false;
-                    for (const s of mcpService.getEnabledServers()) {
-                      const tools = mcpService.getAllTools().get(s.id) || [];
-                      for (const mT of tools) {
-                        if (`mcp_${s.id}_${mT.name}`.replace(/-/g, '_') === tc.function.name) {
-                          const execRes = await mcpService.callTool(s.id, mT.name, args);
-                          toolResult = typeof execRes === 'string' ? execRes : JSON.stringify(execRes, null, 2);
-                          found = true; break;
-                        }
-                      }
-                      if (found) break;
-                    }
-                    if (!found) toolResult = `MCP Server / Tool ${tc.function.name} not found`;
-                  } else {
-                    // Built-in system tools are always allowed
-                    const builtInTools = new Set(['send_message', 'set_reminder', 'cancel_reminder', 'list_reminders']);
-                    const dangerousTools = new Set(['exec_cmd', 'write_file', 'edit_file', 'delete_file']);
 
-                    if (agentId && allowedToolNames.size > 0 && !allowedToolNames.has(tc.function.name) && !builtInTools.has(tc.function.name)) {
-                      toolResult = `[Permission Denied] Tool "${tc.function.name}" is not enabled for this agent.`;
-                    } else {
-                      let needsApproval = false;
-                      const pm = agentId ? (agentService.getAgent(agentId)?.permissionMode || 'normal') : 'normal';
-
-                      if (dangerousTools.has(tc.function.name)) {
-                        if (pm === 'normal' || pm === 'custom') needsApproval = true;
-                        else if (pm === 'auto-edit' && tc.function.name === 'exec_cmd') needsApproval = true;
-                      }
-
-                      if (toolResult === '') {
-                        if (needsApproval && agentId) {
-                          const executionId = `exec_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-                          console.log(`[Server] High risk built-in tool intercepted: ${tc.function.name}. Requesting approval for executionId: ${executionId}`);
-                          res.write(`data: ${JSON.stringify({
-                            type: 'skill_approval_required',
-                            executionId,
-                            skillName: '内置工具',
-                            actionName: tc.function.name,
-                            parameters: args,
-                            agentName: targetConfig.name
-                          })}\n\n`);
-
-                          const approved = await globalApprovalManager.createApproval(executionId);
-                          if (!approved) {
-                            toolResult = `❌ Execute Cancelled: User rejected the execution of ${tc.function.name}`;
-                          } else {
-                            toolResult = await executeAgentTool(tc.function.name, args, { sandboxEnabled, hardSandboxEnabled, sessionId, agentId, conversationId });
-                          }
-                        } else {
-                          toolResult = await executeAgentTool(tc.function.name, args, { sandboxEnabled, hardSandboxEnabled, sessionId, agentId, conversationId });
-                        }
-                      }
-                    }
-                  }
-                } catch (err: any) {
-                  toolResult = `Tool execution failed: ${err.message}`;
-                }
-
-                // Check if tool result contains GUI screenshot and convert to multimodal content
-                const GUI_SCREENSHOT_MARKER = '[GUI_SCREENSHOT]';
-                const SEND_FILE_MARKER = '[SEND_FILE]';
-
-                if (toolResult.includes(GUI_SCREENSHOT_MARKER)) {
-                  // Extract the data URL and text parts
-                  const markerIdx = toolResult.indexOf(GUI_SCREENSHOT_MARKER);
-                  const textPart = toolResult.substring(0, markerIdx).trim();
-                  const dataUrl = toolResult.substring(markerIdx + GUI_SCREENSHOT_MARKER.length).trim();
-
-                  // GUI screenshots are INTERNAL to the agent — NOT sent to the user.
-                  // Only inject into the LLM message history for vision.
-
-                  // Step 1: tool result as plain text (most providers reject image in tool role)
-                  messagesWithSystem.push({
-                    role: 'tool',
-                    tool_call_id: tc.id,
-                    name: tc.function.name,
-                    content: textPart || '[OK] Screenshot captured.'
-                  });
-
-                  // Step 2: inject screenshot as user message for vision
-                  messagesWithSystem.push({
-                    role: 'user',
-                    content: [
-                      { type: 'text', text: '[截图结果] 这是刚刚截取的当前屏幕截图，请根据此图分析并继续你的操作：' },
-                      { type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } }
-                    ] as any
-                  });
-                } else if (toolResult.includes(SEND_FILE_MARKER)) {
-                  const markerIdx = toolResult.indexOf(SEND_FILE_MARKER);
-                  const textPart = toolResult.substring(0, markerIdx).trim();
-                  const nlIdx = toolResult.indexOf('\n', markerIdx);
-                  const dataPart = toolResult.substring(markerIdx + SEND_FILE_MARKER.length, nlIdx !== -1 ? nlIdx : toolResult.length).trim();
-                  const [fileUrl, fileName, mimeType] = dataPart.split('|');
-
-                  currentTurnAttachments.push({ name: fileName, type: mimeType, dataUrl: fileUrl });
-
-                  messagesWithSystem.push({
-                    role: 'tool',
-                    tool_call_id: tc.id,
-                    name: tc.function.name,
-                    content: textPart || '[OK] File sent.'
-                  });
-                } else {
-                  messagesWithSystem.push({
-                    role: 'tool',
-                    tool_call_id: tc.id,
-                    name: tc.function.name,
-                    content: toolResult
-                  });
-                }
+                const result = await dispatchToolCall(tc, toolExecCtx);
+                messagesWithSystem.push(...result.messagesToPush);
+                currentTurnAttachments.push(...result.attachments);
+                fullResponse += result.displayBlock;
 
                 try {
-                  let parsedResult = toolResult;
-                  if (toolResult.includes(GUI_SCREENSHOT_MARKER)) {
-                    parsedResult = toolResult.substring(0, toolResult.indexOf(GUI_SCREENSHOT_MARKER)).trim();
-                  } else if (toolResult.includes(SEND_FILE_MARKER)) {
-                    parsedResult = toolResult.substring(0, toolResult.indexOf(SEND_FILE_MARKER)).trim();
-                  }
-                  const displayResult = parsedResult.substring(0, 800);
-                  const toolBlock = `\n\n<details><summary>⚙️ 工具调用: <code>${tc.function.name}</code></summary>\n\n\`\`\`\n${displayResult}\n\`\`\`\n\n</details>\n\n`;
-                  fullResponse += toolBlock;
-                } catch (e) {
-                  console.error('[Server] Failed to append tool block to fullResponse:', e);
-                }
-
-                try {
-                  res.write(`data: ${JSON.stringify({ type: 'tool_result', name: tc.function.name, result: toolResult })}\n\n`);
+                  res.write(`data: ${JSON.stringify({ type: 'tool_result', name: tc.function.name, result: result.rawResult })}\n\n`);
                 } catch (writeErr) {
                   console.error('[Server] Failed to write tool_result to SSE:', writeErr);
                 }
               }
             } else {
-              isFinalAnswer = true;
+              // ── 行为审计拦截器（共享逻辑 auditBehavior） ──
+              const auditText = fullResponse || currentChunkDelta;
+              const auditMessages = auditBehavior(auditText, messagesWithSystem, loopCount);
+
+              if (auditMessages) {
+                try {
+                  res.write(`data: ${JSON.stringify({
+                    type: 'audit_warning',
+                    message: '检测到模型未使用工具就声称完成操作，正在要求重新执行...'
+                  })}\n\n`);
+                } catch (_) { /* ignore write errors */ }
+                fullResponse = '';
+                messagesWithSystem.push(...auditMessages);
+              } else {
+                isFinalAnswer = true;
+              }
             }
           }
 
@@ -1471,29 +1152,28 @@ ${new Date().toLocaleString('zh-CN')}
         }, targetConfig.id);
 
         let loopCount = 0;
-        let lastToolCalls: string[] = [];
-        let repeatCount = 0;
+        const loopDetector: LoopDetector = { lastSignatures: [], repeatCount: 0 };
         let currentTurnAttachments: any[] = [];
         const MAX_LOOPS = GLOBAL_LLM_CONFIG.MAX_LOOPS;
         const MAX_REPEATS = GLOBAL_LLM_CONFIG.MAX_REPEATS;
 
+        // Non-stream 共享工具执行上下文（无 onApprovalRequest，因为 non-stream 不支持交互式审批）
+        const toolExecCtxNonStream: ToolExecContext = {
+          agentId, conversationId, sessionId,
+          sandboxEnabled, hardSandboxEnabled,
+          allowedToolNames,
+          targetConfigName: targetConfig.name,
+        };
+
         while (response.tool_calls && response.tool_calls.length > 0 && loopCount < MAX_LOOPS) {
           loopCount++;
 
-          // Loop detection for non-stream mode
-          const currentToolSignatures = response.tool_calls.map(tc => `${tc.function.name}(${tc.function.arguments})`).sort().join('|');
-          if (currentToolSignatures === lastToolCalls.join('|')) {
-            repeatCount++;
-            console.warn(`[Server] Loop detected! Same tool call pattern repeated ${repeatCount} times (Non-Stream)`);
-            if (repeatCount >= MAX_REPEATS) {
-              console.error(`[Server] Breaking infinite loop after ${MAX_REPEATS} repeats (Non-Stream)`);
-              const stopWarning = `\\n\\n> [系统预警] 助手尝试连续 ${MAX_REPEATS} 次调用重复的工具未成功（特征: ${currentToolSignatures}），为防止死循环，系统已强行终止操作。`;
-              response.content = (response.content || '') + stopWarning;
-              break;
-            }
-          } else {
-            repeatCount = 0;
-            lastToolCalls = response.tool_calls.map(tc => `${tc.function.name}(${tc.function.arguments})`).sort();
+          // ── 循环检测（共享逻辑） ──
+          const loopWarning = detectToolLoop(response.tool_calls, loopDetector, MAX_REPEATS);
+          if (loopWarning) {
+            console.error(`[Server] Breaking infinite loop after ${MAX_REPEATS} repeats (Non-Stream)`);
+            response.content = (response.content || '') + loopWarning;
+            break;
           }
 
           console.log(`[Server] Non-Stream loop ${loopCount}/${MAX_LOOPS}`);
@@ -1504,96 +1184,14 @@ ${new Date().toLocaleString('zh-CN')}
             tool_calls: response.tool_calls
           });
 
+          // ── 执行工具（共享逻辑 dispatchToolCall） ──
           for (const tc of response.tool_calls) {
             console.log(`[Server] Executing Auto-Tool (Non-Stream): ${tc.function.name}`);
-            let toolResult = '';
-            try {
-              const args = JSON.parse(tc.function.arguments);
-              if (tc.function.name.startsWith('skill_')) {
-                let found = false;
-                for (const s of skillEngine.getEnabledSkills()) {
-                  for (const a of s.actions) {
-                    if (`skill_${s.id}_${a.id}`.replace(/-/g, '_') === tc.function.name) {
-                      const execRes = await skillEngine.executeSkill({ skill: s, action: a, parameters: args, message: '', sandboxEnabled, hardSandboxEnabled, agentId });
-                      toolResult = execRes.success ? (execRes.output || JSON.stringify(execRes.data)) : `Skill Failed: ${execRes.error}`;
-                      found = true; break;
-                    }
-                  }
-                  if (found) break;
-                }
-                if (!found) toolResult = `Skill ${tc.function.name} not found`;
-              } else if (tc.function.name.startsWith('mcp_')) {
-                let found = false;
-                for (const s of mcpService.getEnabledServers()) {
-                  const tools = mcpService.getAllTools().get(s.id) || [];
-                  for (const mT of tools) {
-                    if (`mcp_${s.id}_${mT.name}`.replace(/-/g, '_') === tc.function.name) {
-                      const execRes = await mcpService.callTool(s.id, mT.name, args);
-                      toolResult = typeof execRes === 'string' ? execRes : JSON.stringify(execRes, null, 2);
-                      found = true; break;
-                    }
-                  }
-                  if (found) break;
-                }
-                if (!found) toolResult = `MCP Server / Tool ${tc.function.name} not found`;
-              } else {
-                // Built-in system tools are always allowed
-                const builtInTools = new Set(['send_message', 'set_reminder', 'cancel_reminder', 'list_reminders']);
-                if (agentId && allowedToolNames.size > 0 && !allowedToolNames.has(tc.function.name) && !builtInTools.has(tc.function.name)) {
-                  console.warn(`[Server] BLOCKED tool call "${tc.function.name}" - not in allowed set for agent ${agentId}`);
-                  toolResult = `[Permission Denied] Tool "${tc.function.name}" is not enabled for this agent.`;
-                } else {
-                  toolResult = await executeAgentTool(tc.function.name, args, { sandboxEnabled, hardSandboxEnabled, sessionId, agentId, conversationId });
-                }
-              }
-            } catch (err: any) {
-              toolResult = `Tool execution failed: ${err.message}`;
-            }
 
-            const GUI_SCREENSHOT_MARKER = '[GUI_SCREENSHOT]';
-            const SEND_FILE_MARKER = '[SEND_FILE]';
-
-            if (toolResult.includes(GUI_SCREENSHOT_MARKER)) {
-              const markerIdx = toolResult.indexOf(GUI_SCREENSHOT_MARKER);
-              const textPart = toolResult.substring(0, markerIdx).trim();
-              const dataUrl = toolResult.substring(markerIdx + GUI_SCREENSHOT_MARKER.length).trim();
-              // GUI screenshots are INTERNAL — do NOT push to currentTurnAttachments.
-              // The LLM still sees the image via the user-role vision message below.
-              messagesWithSystem.push({
-                role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: textPart || '[OK] Capture success.'
-              });
-            } else if (toolResult.includes(SEND_FILE_MARKER)) {
-              const markerIdx = toolResult.indexOf(SEND_FILE_MARKER);
-              const textPart = toolResult.substring(0, markerIdx).trim();
-              const nlIdx = toolResult.indexOf('\n', markerIdx);
-              const dataPart = toolResult.substring(markerIdx + SEND_FILE_MARKER.length, nlIdx !== -1 ? nlIdx : toolResult.length).trim();
-              const [fileUrl, fileName, mimeType] = dataPart.split('|');
-              currentTurnAttachments.push({ name: fileName, type: mimeType, dataUrl: fileUrl });
-              messagesWithSystem.push({
-                role: 'tool', tool_call_id: tc.id, name: tc.function.name, content: textPart || '[OK] File sent.'
-              });
-            } else {
-              messagesWithSystem.push({
-                role: 'tool',
-                tool_call_id: tc.id,
-                name: tc.function.name,
-                content: toolResult
-              });
-            }
-
-            try {
-              let parsedResult = toolResult;
-              if (toolResult.includes(GUI_SCREENSHOT_MARKER)) {
-                parsedResult = toolResult.substring(0, toolResult.indexOf(GUI_SCREENSHOT_MARKER)).trim();
-              } else if (toolResult.includes(SEND_FILE_MARKER)) {
-                parsedResult = toolResult.substring(0, toolResult.indexOf(SEND_FILE_MARKER)).trim();
-              }
-              const displayResult = parsedResult.substring(0, 800);
-              const toolBlock = `\n\n<details><summary>⚙️ 工具调用: <code>${tc.function.name}</code></summary>\n\n\`\`\`\n${displayResult}\n\`\`\`\n\n</details>\n\n`;
-              response.content = (response.content || '') + toolBlock;
-            } catch (e) {
-              console.error('[Server] Failed to append tool block to non-stream response:', e);
-            }
+            const result = await dispatchToolCall(tc, toolExecCtxNonStream);
+            messagesWithSystem.push(...result.messagesToPush);
+            currentTurnAttachments.push(...result.attachments);
+            response.content = (response.content || '') + result.displayBlock;
           }
           response = await modelsManager.chat({
             messages: messagesWithSystem,
@@ -1627,34 +1225,14 @@ ${new Date().toLocaleString('zh-CN')}
         }
 
         if (response.content && conversationId) {
-          await contextMemory.addMessage(conversationId, {
-            role: 'assistant',
-            content: response.content,
+          // ── 对话持久化（共享逻辑 persistTurnResult） ──
+          await persistTurnResult({
+            conversationId,
+            agentId,
+            responseContent: response.content,
+            userContent: typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : undefined,
+            attachments: currentTurnAttachments,
           });
-          const thread = agentService.getThread(conversationId);
-          if (thread) {
-            agentService.updateThread(conversationId, {
-              messages: [...thread.messages, {
-                id: `msg-${Date.now()}`,
-                role: 'assistant',
-                content: response.content,
-                timestamp: Date.now(),
-                attachments: currentTurnAttachments.length > 0 ? currentTurnAttachments : undefined
-              }],
-            });
-          }
-        }
-
-        if (agentId && lastUserMsg && response.content) {
-          try {
-            await agentMemoryManager.extractKeyInfoFromConversation(
-              agentId,
-              lastUserMsg.content,
-              response.content
-            );
-          } catch (error) {
-            console.error('[AgentMemory] Failed to extract key info:', error);
-          }
         }
 
         // Check if response content is empty
@@ -1674,3 +1252,4 @@ ${new Date().toLocaleString('zh-CN')}
 }
 
 export const chatOrchestrator = new ChatOrchestrator();
+

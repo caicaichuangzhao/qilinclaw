@@ -4,7 +4,15 @@ import { exec } from 'child_process';
 import util from 'util';
 import Database from 'better-sqlite3';
 import type { Tool } from '../types/index.js';
-import { browserService } from './browser-service.js';
+// Browser service is lazy-loaded — only initialized when Agent actually uses browser tools
+let _browserService: any = null;
+async function getBrowserService() {
+    if (!_browserService) {
+        const mod = await import('./browser-service.js');
+        _browserService = mod.browserService;
+    }
+    return _browserService;
+}
 // GUI service is lazy-loaded to avoid startup side effects (directory creation, script writing)
 let _guiService: any = null;
 async function getGuiService() {
@@ -14,7 +22,15 @@ async function getGuiService() {
     }
     return _guiService;
 }
-import { dockerSandboxService } from './docker-sandbox.js';
+// Docker sandbox is lazy-loaded — most agents don't need it
+let _dockerSandboxService: any = null;
+async function getDockerSandboxService() {
+    if (!_dockerSandboxService) {
+        const mod = await import('./docker-sandbox.js');
+        _dockerSandboxService = mod.dockerSandboxService;
+    }
+    return _dockerSandboxService;
+}
 import { fileSafetyService } from '../safety/file-safety.js';
 
 const execAsync = util.promisify(exec);
@@ -1295,7 +1311,7 @@ export async function handleExecCmd(args: any, options?: ToolOptions): Promise<s
             return '[Sandbox Error] No agent ID provided for Hard Sandbox execution.';
         }
         try {
-            const { stdout, stderr } = await dockerSandboxService.runInSandbox(args.command, options.agentId);
+            const { stdout, stderr } = await (await getDockerSandboxService()).runInSandbox(args.command, options.agentId);
             let result = '';
             if (stdout) result += `STDOUT:\n${sanitizeCommandOutput(stdout)}\n`;
             if (stderr) result += `STDERR:\n${sanitizeCommandOutput(stderr)}\n`;
@@ -1513,7 +1529,7 @@ export async function handleBrowserOpen(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.openAndExtract(url, tabId);
     }
-    return await browserService.openAndExtract(url, tabId);
+    return await (await getBrowserService()).openAndExtract(url, tabId);
 }
 
 export async function handleBrowserClick(args: any): Promise<string> {
@@ -1522,7 +1538,7 @@ export async function handleBrowserClick(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.clickElement(selector, tabId);
     }
-    return await browserService.clickElement(selector, tabId);
+    return await (await getBrowserService()).clickElement(selector, tabId);
 }
 
 export async function handleBrowserType(args: any): Promise<string> {
@@ -1531,7 +1547,7 @@ export async function handleBrowserType(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.typeText(selector, text, tabId);
     }
-    return await browserService.typeText(selector, text, tabId);
+    return await (await getBrowserService()).typeText(selector, text, tabId);
 }
 
 export async function handleBrowserPressKey(args: any): Promise<string> {
@@ -1540,7 +1556,7 @@ export async function handleBrowserPressKey(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.pressKey(key, tabId);
     }
-    return await browserService.pressKey(key, tabId);
+    return await (await getBrowserService()).pressKey(key, tabId);
 }
 
 export async function handleBrowserRefresh(args: any): Promise<string> {
@@ -1549,7 +1565,7 @@ export async function handleBrowserRefresh(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.refreshPage(tabId);
     }
-    return await browserService.refreshPage(tabId);
+    return await (await getBrowserService()).refreshPage(tabId);
 }
 
 export async function handleBrowserScreenshot(args: any): Promise<string> {
@@ -1558,7 +1574,7 @@ export async function handleBrowserScreenshot(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.takeScreenshot(tabId);
     }
-    return await browserService.takeScreenshot(tabId);
+    return await (await getBrowserService()).takeScreenshot(tabId);
 }
 
 export async function handleBrowserScroll(args: any): Promise<string> {
@@ -1567,7 +1583,7 @@ export async function handleBrowserScroll(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.scrollPage(direction, amount, selector, tabId);
     }
-    return await browserService.scrollPage(direction, amount, selector, tabId);
+    return await (await getBrowserService()).scrollPage(direction, amount, selector, tabId);
 }
 
 export async function handleBrowserWait(args: any): Promise<string> {
@@ -1576,7 +1592,7 @@ export async function handleBrowserWait(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.waitForElement(selector, timeout, tabId);
     }
-    return await browserService.waitForElement(selector, timeout, tabId);
+    return await (await getBrowserService()).waitForElement(selector, timeout, tabId);
 }
 
 export async function handleBrowserSelect(args: any): Promise<string> {
@@ -1585,7 +1601,7 @@ export async function handleBrowserSelect(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.selectOption(selector, value, tabId);
     }
-    return await browserService.selectOption(selector, value, tabId);
+    return await (await getBrowserService()).selectOption(selector, value, tabId);
 }
 
 export async function handleBrowserHover(args: any): Promise<string> {
@@ -1594,7 +1610,7 @@ export async function handleBrowserHover(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.hoverElement(selector, tabId);
     }
-    return await browserService.hoverElement(selector, tabId);
+    return await (await getBrowserService()).hoverElement(selector, tabId);
 }
 
 export async function handleBrowserGoBack(args: any): Promise<string> {
@@ -1603,7 +1619,7 @@ export async function handleBrowserGoBack(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.goBack(tabId);
     }
-    return await browserService.goBack(tabId);
+    return await (await getBrowserService()).goBack(tabId);
 }
 
 export async function handleBrowserGoForward(args: any): Promise<string> {
@@ -1612,7 +1628,7 @@ export async function handleBrowserGoForward(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.goForward(tabId);
     }
-    return await browserService.goForward(tabId);
+    return await (await getBrowserService()).goForward(tabId);
 }
 
 export async function handleBrowserCloseTab(args: any): Promise<string> {
@@ -1621,7 +1637,7 @@ export async function handleBrowserCloseTab(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.closeTab(tabId);
     }
-    return await browserService.closeTab(tabId);
+    return await (await getBrowserService()).closeTab(tabId);
 }
 
 export async function handleBrowserEvalJS(args: any): Promise<string> {
@@ -1630,7 +1646,7 @@ export async function handleBrowserEvalJS(args: any): Promise<string> {
     if (bridge.isConnected()) {
         return await bridge.evaluateJS(script, tabId);
     }
-    return await browserService.evaluateJS(script, tabId);
+    return await (await getBrowserService()).evaluateJS(script, tabId);
 }
 
 // --- GUI Desktop Automation Tool Handlers ---
