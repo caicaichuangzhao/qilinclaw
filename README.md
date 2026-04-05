@@ -39,7 +39,6 @@ We've built most features with a **fully visual interface** — from creating ag
 - 🏢 **Office Collaboration** — create team spaces where multiple agents collaborate on tasks
 - 🔌 **MCP Protocol** — extend agent capabilities with Model Context Protocol servers
 - 🌐 **Browser Automation** — agents can control your real browser via Chrome extension
-- 🖱️ **GUI Automation** *(Beta)* — agents can operate your desktop (click, type, screenshot)
 - 🚀 **1-Click Hot Update** — built-in GitHub sync to seamlessly pull the latest code and updates with a single click in UI
 - 🌍 **Bilingual UI** — full Chinese/English interface, switch with one click
 - 🔒 **Local-First** — all data stays on your machine, no cloud dependency
@@ -235,18 +234,6 @@ In **Settings → Context Memory Configuration** you can adjust:
 - 🔙 Forward/backward navigation
 - ⚙️ Execute JavaScript
 
-### 🖱️ GUI Desktop Automation *(Beta)*
-
-> ⚠️ **Warning:** This feature is in Beta. Some operations may not work perfectly. Use with caution.
->
-> **Emergency Stop:** If GUI automation behaves unexpectedly, **double-press the ESC key** to immediately interrupt all GUI operations and regain mouse/keyboard control.
-
-- 📷 Screen capture and analysis
-- 🔍 UI element scanning (UIAutomation)
-- 🖱️ Mouse control (click, drag, scroll)
-- ⌨️ Keyboard input
-- 🏷️ Set-of-Mark visual grounding
-
 ### 🔌 MCP Protocol Support
 
 - Connect to any MCP-compatible server
@@ -376,10 +363,6 @@ QilinClaw supports **Chinese** and **English** out of the box. Switch language a
 ### Q: Is my data sent to any cloud?
 
 **A:** No. QilinClaw runs entirely on your local machine. The only external calls are to the AI model APIs you configure.
-
-### Q: What if GUI automation goes out of control?
-
-**A:** Double-press the ESC key to immediately interrupt all GUI operations and regain control. GUI features are currently in Beta — please report any issues you encounter.
 
 ### Q: How do I update?
 
