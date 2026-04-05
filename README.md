@@ -264,6 +264,8 @@ QilinClaw includes multiple layers of security to protect your system and data:
 | **Auto Backup** | Automatically backs up modified files, configurable max backups per file |
 | **System Backup** | One-click backup of your entire system state, one-click restore |
 | **Auto Recovery** | Automatically recovers to the last known good configuration on failure |
+| **Hard Orchestrator Abort** | Globally propagates abort signals through agents when stream drops or user clicks stop, forcefully halting LLM consumption & GUI operations |
+| **Continuous Persistence** | Rescues state upon unexpected disconnection; auto-flushes partial message chunks seamlessly to the database ensuring 0 data loss |
 | **Health Monitoring** | Real-time status of database, bots, memory, network, and gateway |
 | **Command Filtering** | Dangerous system commands are automatically blocked |
 | **Input Validation** | Input sanitization layer to prevent injection attacks |
