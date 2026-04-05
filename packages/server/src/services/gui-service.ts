@@ -743,7 +743,7 @@ export class GUIService {
 
                     try {
                         // Globally abort the LLM agent loop to prevent it from stealing control back
-                        const { ChatOrchestrator } = require('./chat-orchestrator-ref.js');
+                        const { ChatOrchestrator } = require('./chat-orchestrator.js');
                         if (ChatOrchestrator && ChatOrchestrator.abortAll) {
                             ChatOrchestrator.abortAll();
                         }

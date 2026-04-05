@@ -74,7 +74,7 @@ export class LLMManager {
     return this.defaultConfigId ? this.configs.get(this.defaultConfigId) : undefined;
   }
 
-  async chat(request: ChatRequest, configId?: string): Promise<ChatResponse> {
+  async chat(request: ChatRequest, configId?: string, signal?: AbortSignal): Promise<ChatResponse> {
     const id = configId || this.defaultConfigId;
     if (!id) {
       throw new Error('No LLM configuration available');
@@ -88,10 +88,10 @@ export class LLMManager {
     }
 
     if (limiter) {
-      return limiter.schedule(() => adapter.chat(request));
+      return limiter.schedule(() => adapter.chat(request, signal));
     }
 
-    return adapter.chat(request);
+    return adapter.chat(request, signal);
   }
 
   async chatStream(

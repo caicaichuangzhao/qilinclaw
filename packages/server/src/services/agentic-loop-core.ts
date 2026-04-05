@@ -21,6 +21,8 @@ import { contextMemory } from './context-memory.js';
 import { agentMemoryManager } from './agent-memory.js';
 import { usageTracker } from './usage-tracker.js';
 import { truncateToolResult } from './tool-result-truncator.js';
+import { taxonomyMemory } from './taxonomy-memory.js';
+import { qcHarness } from './qc-harness.js';
 import type { ChatMessage, ToolCall } from '../types/index.js';
 
 // ── 常量 ──
@@ -58,6 +60,24 @@ export interface ToolExecResult {
   rawResult: string;
 }
 
+// ── 工具结果快速构建器（用于 Harness 拦截等提前返回场景） ──
+
+function buildToolExecResult(
+  tc: ToolCall,
+  toolResult: string,
+  attachments: ToolExecResult['attachments'],
+): ToolExecResult {
+  const truncatedResult = truncateToolResult(tc.function.name, toolResult);
+  const messagesToPush: ChatMessage[] = [{
+    role: 'tool',
+    tool_call_id: tc.id,
+    name: tc.function.name,
+    content: truncatedResult,
+  }];
+  const displayBlock = buildDisplayBlock(tc.function.name, toolResult);
+  return { messagesToPush, attachments, displayBlock, rawResult: toolResult };
+}
+
 // ── 核心工具调度器 ──
 
 /**
@@ -76,7 +96,23 @@ export async function dispatchToolCall(
   const attachments: ToolExecResult['attachments'] = [];
 
   try {
-    const args = JSON.parse(tc.function.arguments);
+    let args = JSON.parse(tc.function.arguments);
+
+    // ── QC-Harness: PreToolUse 钩子 ──
+    // 可拦截危险操作、修改参数、检查熔断状态
+    try {
+      const preResult = await qcHarness.preToolUse(tc.function.name, args);
+      if (!preResult.continue) {
+        // 被 Harness 拦截 → 直接返回拦截信息，不执行真实工具
+        toolResult = preResult.blockReason || '[QC-Harness] 操作被安全策略拦截。';
+        return buildToolExecResult(tc, toolResult, attachments);
+      }
+      // 如果 Hook 修改了参数，使用修改后的版本
+      if (preResult.updatedArgs) args = preResult.updatedArgs;
+    } catch (harnessErr) {
+      // Harness 故障不应阻塞主流程
+      console.error('[QC-Harness] PreToolUse hook error (non-fatal):', harnessErr);
+    }
 
     // ── Route 1: Skill 技能调用 ──
     if (tc.function.name.startsWith('skill_')) {
@@ -89,6 +125,19 @@ export async function dispatchToolCall(
     // ── Route 3: 内置系统工具 ──
     else {
       toolResult = await executeBuiltinTool(tc, args, ctx);
+    }
+
+    // ── QC-Harness: PostToolUse 钩子 ──
+    // 可触发自动命令（如 eslint --fix）、记录审计日志
+    try {
+      const isSuccess = !toolResult.includes('Tool execution failed') && !toolResult.includes('[Permission Denied]');
+      const postResult = await qcHarness.postToolUse(tc.function.name, args, toolResult, isSuccess);
+      // 如果 PostToolUse Hook 产生了附加输出（如自动格式化结果），追加到工具结果
+      if (postResult.appendOutput) {
+        toolResult += postResult.appendOutput;
+      }
+    } catch (harnessErr) {
+      console.error('[QC-Harness] PostToolUse hook error (non-fatal):', harnessErr);
     }
   } catch (err: any) {
     toolResult = `Tool execution failed: ${err.message}`;
@@ -376,17 +425,17 @@ export async function persistTurnResult(params: {
     });
   }
 
-  // 提取关键信息到长期记忆
+  // 提取关键信息到长期记忆（双轨并行：旧版 + 新版 taxonomy）
   if (agentId && userContent) {
-    try {
-      await agentMemoryManager.extractKeyInfoFromConversation(
-        agentId,
-        userContent,
-        responseContent,
-      );
-    } catch (error) {
-      console.error('[AgentMemory] Failed to extract key info:', error);
-    }
+    // 旧版正则提取（兼容层，后续可移除）
+    agentMemoryManager.extractKeyInfoFromConversation(
+      agentId, userContent, responseContent,
+    ).catch(err => console.error('[AgentMemory] Legacy extraction failed:', err));
+
+    // 新版 4 层分类提取（后台静默，fire-and-forget）
+    taxonomyMemory.extractFromConversation(
+      agentId, userContent, responseContent,
+    ).catch(err => console.error('[TaxonomyMemory] Extraction failed:', err));
   }
 }
 

@@ -4,7 +4,7 @@ import fs from 'fs';
 
 export interface LLMAdapter {
   readonly config: LLMConfig;
-  chat(request: ChatRequest): Promise<ChatResponse>;
+  chat(request: ChatRequest, signal?: AbortSignal): Promise<ChatResponse>;
   chatStream(request: ChatRequest, onChunk: (chunk: StreamChunk) => void, signal?: AbortSignal): Promise<void>;
   isAvailable(): Promise<boolean>;
   getModels(): Promise<string[]>;
@@ -58,7 +58,7 @@ class OpenAIAdapter implements LLMAdapter {
     return this.client as import('openai').OpenAI;
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  async chat(request: ChatRequest, signal?: AbortSignal): Promise<ChatResponse> {
     const client = await this.getClient();
     const response = await client.chat.completions.create({
       model: request.model || this.config.model,
@@ -159,7 +159,7 @@ class AnthropicAdapter implements LLMAdapter {
     return this.client as import('@anthropic-ai/sdk').default;
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  async chat(request: ChatRequest, signal?: AbortSignal): Promise<ChatResponse> {
     const client = await this.getClient();
     const systemMessage = request.messages.find(m => m.role === 'system');
     const otherMessages = request.messages.filter(m => m.role !== 'system');
@@ -243,13 +243,20 @@ class OpenAICompatibleAdapter implements LLMAdapter {
     };
     return providerUrls[this.config.provider] || '';
   }
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  async chat(request: ChatRequest, parentSignal?: AbortSignal): Promise<ChatResponse> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000); // 2 minutes
+    
+    // Auto cascade cancel
+    const abortHandler = () => controller.abort();
+    if (parentSignal) {
+      if (parentSignal.aborted) throw new Error('AbortError');
+      parentSignal.addEventListener('abort', abortHandler);
+    }
 
     try {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.config.apiKey}`,
@@ -272,7 +279,6 @@ class OpenAICompatibleAdapter implements LLMAdapter {
           tools: request.tools,
           tool_choice: request.tool_choice,
         }),
-        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -312,6 +318,7 @@ class OpenAICompatibleAdapter implements LLMAdapter {
       };
     } finally {
       clearTimeout(timeout);
+      if (parentSignal) parentSignal.removeEventListener('abort', abortHandler);
     }
   }
 

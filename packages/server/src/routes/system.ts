@@ -12,6 +12,7 @@ import { knowledgeService } from '../services/knowledge-service.js';
 import { fileSafetyService } from '../safety/file-safety.js';
 import { smartMemory } from '../services/smart-memory.js';
 import { botManager } from '../bots/manager.js';
+import { systemUpdateService } from '../services/system-update.js';
 import type { SafetyConfig } from '../types/index.js';
 
 const router = express.Router();
@@ -265,6 +266,25 @@ router.get('/errors', async (req, res) => {
     const { limit = 50 } = req.query;
     const errors = errorRecoveryService.getErrors(parseInt(limit as string));
     res.json(errors);
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// -- GitHub Update --
+router.post('/update/check', async (_req, res) => {
+  try {
+    const status = await systemUpdateService.checkUpdate();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+router.post('/update/pull', async (_req, res) => {
+  try {
+    const status = await systemUpdateService.performUpdate();
+    res.json(status);
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }

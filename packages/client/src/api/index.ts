@@ -133,6 +133,11 @@ export const statusApi = {
   errors: (limit = 50) => api.get('/errors', { params: { limit } }),
 };
 
+export const systemUpdateApi = {
+  check: () => api.post<{ hasUpdate: boolean; commitsBehind: number; latestCommitHash?: string; latestCommitMessage?: string }>('/update/check'),
+  pull: () => api.post<{ success: boolean; message: string; log?: string }>('/update/pull'),
+};
+
 export interface LocalModelInfo {
   name: string;
   path: string;

@@ -40,6 +40,7 @@ We've built most features with a **fully visual interface** — from creating ag
 - 🔌 **MCP Protocol** — extend agent capabilities with Model Context Protocol servers
 - 🌐 **Browser Automation** — agents can control your real browser via Chrome extension
 - 🖱️ **GUI Automation** *(Beta)* — agents can operate your desktop (click, type, screenshot)
+- 🚀 **1-Click Hot Update** — built-in GitHub sync to seamlessly pull the latest code and updates with a single click in UI
 - 🌍 **Bilingual UI** — full Chinese/English interface, switch with one click
 - 🔒 **Local-First** — all data stays on your machine, no cloud dependency
 
@@ -380,6 +381,7 @@ QilinClaw supports **Chinese** and **English** out of the box. Switch language a
 
 ### Q: How do I update?
 
+You can now click the **Check for Updates** button in the Settings page to auto-pull the newest updates safely, or do it manually using the simple commands below: 
 ```bash
 cd qilinclaw
 git pull

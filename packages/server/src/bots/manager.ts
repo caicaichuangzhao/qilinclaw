@@ -21,7 +21,7 @@ import { MattermostAdapter } from './mattermost.js';
 import { modelsManager } from '../models/manager.js';
 import { rateLimiter } from '../safety/rate-limiter.js';
 import { agentService } from '../services/agent-service.js';
-import { ChatOrchestrator } from '../services/chat-orchestrator-ref.js';
+import { ChatOrchestrator } from '../services/chat-orchestrator.js';
 
 function debugLog(msg: string) {
   const logPath = path.resolve(process.cwd(), '.qilin-claw/debug.log');

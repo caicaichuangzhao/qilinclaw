@@ -17,7 +17,7 @@ import { AgentTools, executeAgentTool } from '../services/tools.js';
 import { officeService } from '../services/office-service.js';
 import { mcpService } from '../services/mcp-service.js';
 import { gatewayService } from '../services/gateway.js';
-import { chatOrchestrator } from '../services/chat-orchestrator-ref.js';
+import { chatOrchestrator } from '../services/chat-orchestrator.js';
 import { MODEL_DATABASE, findModel, searchModels, getModelsByProvider, getAllModelsWithCustom, addCustomModel, removeCustomModel, type ModelInfo } from '../data/models.js';
 import { LLM_CONFIG as GLOBAL_LLM_CONFIG } from '../config/constants.js';
 import type { LLMConfig, ChatMessage, ToolCall } from '../types/index.js';

@@ -43,6 +43,24 @@ export const AgentTools: Tool[] = [
     {
         type: 'function',
         function: {
+            name: 'web_adaptive_extract',
+            description: 'Advanced web scraper that can extract main content or specific data from modern anti-bot websites using adaptive DOM fingerprints and stealth modes.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    url: { type: 'string', description: 'The absolute URL to scrape' },
+                    extract_main_content: { type: 'boolean', description: 'If true, returns only the stripped main semantic content (removes noise, ads, navbars).' },
+                    target_selector: { type: 'string', description: 'Optional CSS selector of a specific element to extract.' },
+                    target_description: { type: 'string', description: 'Optional natural language description of what you want to find.' },
+                    fingerprint_json: { type: 'string', description: 'Optional JSON fingerprint returned from a previous extraction to enable self-healing adaptive matching.' }
+                },
+                required: ['url']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
             name: 'clawhub_search',
             description: 'Search for skills on Clawhub.',
             parameters: {
@@ -1363,6 +1381,58 @@ export async function handleWebSearch(args: any, options?: ToolOptions): Promise
     }
 }
 
+import { stealthFetcher } from './stealth-fetcher.js';
+import { fingerprintEngine } from './dom-fingerprint.js';
+import * as cheerio from 'cheerio';
+
+export async function handleWebAdaptiveExtract(args: any, options?: ToolOptions): Promise<string> {
+    const { url, extract_main_content, target_selector, target_description, fingerprint_json } = args;
+    
+    // Adaptive extraction using Stealth Fetcher
+    const res = await stealthFetcher.fetchPage(url, { extractMainContent: extract_main_content });
+    
+    if (res.error) {
+        return `[Error] Adaptive Fetch failed: ${res.error}`;
+    }
+    
+    if (extract_main_content) {
+        return res.mainText || `[Error] No main content extracted`;
+    }
+    
+    const $ = cheerio.load(res.html);
+    
+    if (fingerprint_json) {
+        let fp;
+        try { fp = JSON.parse(fingerprint_json); } catch(e){}
+        if (fp) {
+            const match = fingerprintEngine.findBestMatch(res.html, fp);
+            if (match.element) {
+                return JSON.stringify({
+                    status: 'Success (Adaptive Match)',
+                    score: match.score.toFixed(3),
+                    text: $(match.element).text().trim().substring(0, 1000),
+                    html_snippet: $(match.element).parent().html()?.substring(0, 500)
+                }, null, 2);
+            }
+        }
+    } else if (target_selector) {
+        const elements = $(target_selector).toArray();
+        if (elements.length > 0) {
+            const firstEl = elements[0];
+            const fp = fingerprintEngine.generateFingerprint($, firstEl);
+            return JSON.stringify({
+                status: 'Success (Exact Match)',
+                extracted_text: $(firstEl).text().trim().substring(0, 1000),
+                generated_fingerprint: JSON.stringify(fp),
+                note: 'Save this generated_fingerprint. You can pass it as fingerprint_json for future robust extraction even if the selector changes.'
+            }, null, 2);
+        }
+        return `[Error] Selector not found on page.`;
+    }
+    
+    return res.html.substring(0, 8000) + '... [Rest truncated. Recommend setting extract_main_content to true]';
+}
+
 export async function handleWebFetch(args: any, options?: ToolOptions): Promise<string> {
     try {
         const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
@@ -1874,6 +1944,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
     'exec_cmd': handleExecCmd,
     'web_search': handleWebSearch,
     'web_fetch': handleWebFetch,
+    'web_adaptive_extract': handleWebAdaptiveExtract,
     'manage_process': handleManageProcess,
     'send_message': handleSendMessage,
     'set_reminder': handleSetReminder,

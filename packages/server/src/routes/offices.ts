@@ -502,7 +502,7 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
                 const toolReport = memberToolCallCount > 0
                     ? `\n\n📊 执行报告：调用了 ${memberToolCallCount} 次工具 [${memberToolsUsed.join(', ')}]`
                     : `\n\n📊 执行报告：本次未调用工具（纯文本产出）`;
-                const reviewRequest = `你是「${leaderAgent.name}」，担任组长。\n\n子任务：${assignment.subtask}\n\n成员「${memberAgent!.name}」提交的成果：\n${memberResult}${toolReport}\n\n审核要求：\n1. 根据子任务的**性质**来判断成果质量：如果子任务是撰写方案、分析、翻译等文本工作，不需要工具调用也完全合格；如果子任务需要操作文件、搜索网页、执行命令等，则应关注是否有对应的工具调用记录。\n2. 重点关注成果内容是否完整、是否切题、质量是否达标。\n3. 只回复如下JSON格式（不要加markdown代码块）：\n{ "approved": true/false, "feedback": "反馈意见" }`;
+                const reviewRequest = `你是「${leaderAgent.name}」，担任组长。\n\n子任务：${assignment.subtask}\n\n成员「${memberAgent!.name}」当前的回复/成果：\n${memberResult}${toolReport}\n\n审核要求：\n1. 【关键判断】请区分这是在"提交成果"还是"寻求工作指示/补充信息"。如果成员是因为缺少前置条件（如用户未提供URL、账号等）而主动向你询问，这属于【正常工作沟通】，必须设定 "approved": true，并在 "feedback" 中将问题向上反馈或给予解答。\n2. 根据子任务性质判断成果：如果子任务明确需要操作（如打开网页、本地文件），请检查对应的调用记录；如果是分析解答，纯文本亦可。\n3. 如果明显敷衍、未完成却假装完成，设定 "approved": false 并指出需要修改的地方。\n4. 严格回复如下JSON格式（不要加markdown代码块）：\n{ "approved": true/false, "feedback": "反馈修改意见或补充的工作沟通答复" }`;
                 const reviewResult = await chat(decompositionPrompt, reviewRequest, leaderConfigId, leaderAgent.id);
 
                 let reviewApproved = true;
@@ -520,7 +520,7 @@ officesRoutes.post('/:id/dispatch-task', async (req, res) => {
                     agentId: office.leaderId!,
                     role: 'assistant',
                     content: reviewApproved
-                        ? `✅ @${memberAgent!.name} 审核通过：${reviewFeedback || '成果合格'}`
+                        ? `💬 @${memberAgent!.name} 组长批示/通过：${reviewFeedback || '成果合格'}`
                         : `🔄 @${memberAgent!.name} 需要修改：${reviewFeedback}`,
                 });
 

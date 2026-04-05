@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue';
-import { safetyApi, type SafetyConfig } from '@/api';
+import { safetyApi, systemUpdateApi, type SafetyConfig } from '@/api';
 import { useStatusStore } from '@/stores/status';
 import CustomSelect from '../components/CustomSelect.vue';
 import { useI18n } from '@/i18n';
@@ -324,6 +324,41 @@ async function restoreSystemBackup() {
     alert(t('settings.restoreFailed'));
   } finally {
     restoringBackup.value = false;
+  }
+}
+
+// System GitHub Update 
+const updateStatus = ref<{ hasUpdate: boolean; commitsBehind: number; latestCommitHash?: string; latestCommitMessage?: string } | null>(null);
+const checkingUpdate = ref(false);
+const pullingUpdate = ref(false);
+
+async function checkSystemUpdate() {
+  checkingUpdate.value = true;
+  updateStatus.value = null;
+  try {
+    const response = await systemUpdateApi.check();
+    updateStatus.value = response.data;
+    if (!response.data.hasUpdate) {
+      alert('当前已经是最新开源版本，无需更新！');
+    }
+  } catch (error: any) {
+    alert(error.response?.data?.error || error.message);
+  } finally {
+    checkingUpdate.value = false;
+  }
+}
+
+async function performSystemUpdate() {
+  if (!confirm('💡 注意：如果本地有未自己修改过的代码，将会被自动 stash。\n\n确定从 GitHub 拉取线上最新主分支代码并升级覆盖吗？')) return;
+  pullingUpdate.value = true;
+  try {
+    const response = await systemUpdateApi.pull();
+    alert('✅ 更新执行结果输出：\n\n' + response.data.log + '\n\n(可能需要重启服务以完全加载热更新功能)');
+    updateStatus.value = null;
+  } catch (error: any) {
+    alert('❌ 更新失败拉取终止：\n\n' + (error.response?.data?.error || error.message));
+  } finally {
+    pullingUpdate.value = false;
   }
 }
 
@@ -1391,6 +1426,41 @@ function handleCustomFileUpload(event: Event) {
 
           <div v-else class="text-slate-400 text-center py-4">
             {{ t('settings.noBackup') }}
+          </div>
+        </div>
+
+        <!-- Update Panel -->
+        <div class="card border border-amber-500/20 bg-amber-500/5">
+          <h3 class="text-lg font-semibold mb-4 text-amber-500">📥 GitHub 开源端极速同步</h3>
+          <p class="text-slate-400 text-sm mb-4">通过防冲突底座直连远端 GitHub 仓库 (caicaichuangzhao/qilinclaw) ，检测落后的代码并一键覆盖更新。无痛接收最新开源能力。</p>
+          
+          <div class="flex gap-4 mb-4">
+            <button class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded transition-colors font-medium flex items-center gap-2" @click="checkSystemUpdate" :disabled="checkingUpdate || pullingUpdate">
+               <span v-if="checkingUpdate" class="animate-spin text-amber-500">↻</span> 
+               {{ checkingUpdate ? '正在探测远端日志...' : '检测是否有新版本代码' }}
+            </button>
+          </div>
+
+          <div v-if="updateStatus?.hasUpdate" class="bg-amber-500/10 border border-amber-500/30 p-4 rounded-xl mt-4 max-w-2xl">
+            <div class="flex items-start gap-3">
+              <span class="text-2xl mt-0.5">🚀</span>
+              <div>
+                <h4 class="font-bold text-amber-500 text-lg mb-1">发现新代码可用！</h4>
+                <p class="text-slate-300 text-sm mb-2">
+                  本地节点落后开源上游主库 <strong class="text-amber-400 text-lg">{{ updateStatus.commitsBehind }}</strong> 个功能提交。
+                </p>
+                <div class="bg-black/40 rounded p-2 text-xs text-emerald-400 my-3 font-mono border border-emerald-500/20">
+                  <span class="text-slate-500 mr-2">[{{"latestCommitHash" in updateStatus ? updateStatus.latestCommitHash : "Hash"}}]</span> {{ "latestCommitMessage" in updateStatus ? updateStatus.latestCommitMessage : "" }}
+                </div>
+                <button 
+                  class="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black font-bold px-6 py-2 rounded-lg shadow-lg shadow-amber-500/20 transition-all transform active:scale-95"
+                  @click="performSystemUpdate"
+                  :disabled="pullingUpdate"
+                >
+                  {{ pullingUpdate ? '正在与 Github 并发同步文件中...' : '立即拉取源码热更新' }}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

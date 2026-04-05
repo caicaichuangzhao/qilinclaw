@@ -18,6 +18,9 @@ import { detectFCTier, getExtraConstraint } from './model-capability.js';
 import { truncateToolResult } from './tool-result-truncator.js';
 import { assessCompactionNeed, compactMessages, cleanupCompactionState } from './context-compactor.js';
 import { dispatchToolCall, detectToolLoop, auditBehavior, persistTurnResult, recordTurnUsage, type ToolExecContext, type LoopDetector } from './agentic-loop-core.js';
+import { taxonomyMemory } from './taxonomy-memory.js';
+import { qcHarness } from './qc-harness.js';
+import { withRetry } from './fault-tolerance.js';
 import type { ChatMessage, ToolCall } from '../types/index.js';
 
 export class ChatOrchestrator {
@@ -206,7 +209,7 @@ export class ChatOrchestrator {
 **可用能力**：
 - 文件操作：读取(read_file)、写入(write_file)、编辑(edit_file)、删除(delete_file)
 - 命令执行：终端命令(exec_cmd)、进程管理(manage_process)
-- 网络操作：搜索(web_search)、抓取(web_fetch)、浏览器自动化(browser_*)
+- 网络操作：搜索(web_search)、抓取(web_fetch)、自适应高防抓取(web_adaptive_extract)、浏览器自动化(browser_*)
 - 桌面 GUI：截图和操控桌面应用(gui_*)
 - 技能市场：搜索和安装 ClawHub 技能/MCP 服务器(clawhub_*)
 - 通讯：发送中间状态消息(send_message)、发送文件(send_file)
@@ -517,6 +520,22 @@ ${new Date().toLocaleString('zh-CN')}
           // Safely concat after parallel execution
           if (contextInfo.knowledgeContext) finalSystemPrompt += contextInfo.knowledgeContext;
           if (contextInfo.historyContext) finalSystemPrompt += contextInfo.historyContext;
+
+          // ── Taxonomy Memory: 注入 4 层分类长期记忆 ──
+          if (agentId) {
+            try {
+              const lastUserText = typeof lastUserMessage.content === 'string'
+                ? lastUserMessage.content : '';
+              const memories = await taxonomyMemory.queryRelevantMemories(agentId, lastUserText, 8);
+              const memoryBlock = taxonomyMemory.formatForSystemPrompt(memories);
+              if (memoryBlock) {
+                finalSystemPrompt += '\n\n' + memoryBlock;
+                console.log(`[TaxonomyMemory] Injected ${memories.length} memories into system prompt`);
+              }
+            } catch (err) {
+              console.error('[TaxonomyMemory] Failed to query memories:', err);
+            }
+          }
         }
       }
 
@@ -596,6 +615,7 @@ ${new Date().toLocaleString('zh-CN')}
           ['manage_process',    isCustom ? !!agentToolsConfig.manage_process : isFull],
           ['web_search',        isCustom ? !!agentToolsConfig.web_search : true],
           ['web_fetch',         isCustom ? !!agentToolsConfig.web_fetch : true],
+          ['web_adaptive_extract', isCustom ? !!agentToolsConfig.web_fetch : true],
         ];
         for (const [name, allowed] of toolPermissions) {
           if (allowed) {
@@ -628,7 +648,7 @@ ${new Date().toLocaleString('zh-CN')}
         }
 
         // GUI desktop automation tools (all-or-none bundle)
-        const guiEnabled = isFull || (isCustom && agentToolsConfig.gui_control);
+        const guiEnabled = !!agentToolsConfig.gui_control;
         if (guiEnabled) {
           const guiToolNames = ['gui_screenshot', 'gui_screenshot_annotated', 'gui_click', 'gui_double_click', 'gui_right_click', 'gui_type', 'gui_press_key', 'gui_scroll', 'gui_drag', 'gui_get_cursor', 'gui_move_mouse', 'gui_get_windows', 'gui_scan_screen', 'gui_scan_desktop', 'gui_focus_window', 'gui_click_element', 'gui_click_marker', 'gui_emergency_reset'];
           for (const name of guiToolNames) {
@@ -825,29 +845,50 @@ ${new Date().toLocaleString('zh-CN')}
 
         sendStatus('connecting', '🔗 正在连接API服务器...');
 
-        // Detect abort via both the dedicated abort endpoint (primary) and socket close (fallback).
-        // req.on('close') is unreliable on HTTP keep-alive, so the abort endpoint is the main mechanism.
-        let clientAborted = false;
+        // 引入顶级全局中断控制器
+        const globalAbortCtrl = new AbortController();
+        if (conversationId) ChatOrchestrator.streamControllers.set(conversationId, globalAbortCtrl);
+
         req.on('close', () => {
           if (!res.writableEnded) {
-            clientAborted = true;
+            console.warn(`[Server] Connection dropped by client for ${conversationId}. Aborting workflow...`);
+            globalAbortCtrl.abort('CLIENT_DISCONNECT'); // 发射强杀核弹
             guiService.cancelCurrentOperation();
           }
         });
 
         // Helper: check both mechanisms together
-        const isAborted = () => clientAborted || (conversationId ? ChatOrchestrator.isAborted(conversationId) : false);
+        const isAborted = () => globalAbortCtrl.signal.aborted || (conversationId ? ChatOrchestrator.isAborted(conversationId) : false);
 
 
         let fullResponse = '';
         let chunkCount = 0;
         const startTime = Date.now();
+        const initialMessageId = `msg-${Date.now()}`;
+        let currentTurnAttachments: any[] = [];
+
+        // 【新特性 - 抢先占位落库】无论成败，先建立一条"生成中"的空白消息锚点
+        if (conversationId) {
+          const thread = agentService.getThread(conversationId);
+          if (thread) {
+            agentService.updateThread(conversationId, {
+              messages: [...thread.messages, {
+                id: initialMessageId,
+                role: 'assistant',
+                content: '',
+                timestamp: Date.now(),
+              }],
+            });
+          }
+        }
 
         let sessionId: string | undefined;
         if (agentId && conversationId) {
           try {
             sessionId = gatewayService.createSession(agentId, conversationId, 'web', 'web');
             console.log(`[Server] Created gateway session ${sessionId} for agent ${agentId}`);
+            // ── QC-Harness: SessionStart ──
+            qcHarness.startSession(conversationId, agentId).catch(() => {});
           } catch (error) {
             console.error('[Server] Failed to create gateway session:', error);
           }
@@ -857,7 +898,6 @@ ${new Date().toLocaleString('zh-CN')}
           let loopCount = 0;
           let isFinalAnswer = false;
           const loopDetector: LoopDetector = { lastSignatures: [], repeatCount: 0 };
-          let currentTurnAttachments: any[] = [];
 
           // 构建工具执行上下文（stream 和 non-stream 共享）
           const toolExecCtx: ToolExecContext = {
@@ -897,61 +937,52 @@ ${new Date().toLocaleString('zh-CN')}
             let currentToolCalls: { [index: number]: any } = {};
             let currentChunkDelta = '';
 
-            // Create a per-stream AbortController so STOP can interrupt the LLM API fetch mid-stream
-            const streamCtrl = new AbortController();
-            if (conversationId) {
-              ChatOrchestrator.streamControllers.set(conversationId, streamCtrl);
-            }
+            if (isAborted()) throw new Error('AbortError');
 
             try {
-              try {
-                await modelsManager.chatStream(
-                  {
-                    messages: messagesWithSystem,
-                    tools: injectedTools,
-                    tool_choice: injectedTools && injectedTools.length > 0 ? 'auto' : undefined
-                  },
-                  (chunk) => {
-                    chunkCount++;
-                    if (chunk.delta) {
-                      currentChunkDelta += chunk.delta;
-                      fullResponse += chunk.delta;
-                    }
-                    if (chunk.tool_calls) {
-                      for (const tc of chunk.tool_calls) {
-                        if (!currentToolCalls[tc.index]) {
-                          currentToolCalls[tc.index] = { id: tc.id, type: 'function', function: { name: '', arguments: '' } };
-                        }
-                        if (tc.id) currentToolCalls[tc.index].id = tc.id;
-                        if (tc.function?.name) currentToolCalls[tc.index].function.name += tc.function.name;
-                        if (tc.function?.arguments) currentToolCalls[tc.index].function.arguments += tc.function.arguments;
+              await modelsManager.chatStream(
+                {
+                  messages: messagesWithSystem,
+                  tools: injectedTools,
+                  tool_choice: injectedTools && injectedTools.length > 0 ? 'auto' : undefined
+                },
+                (chunk) => {
+                  if (isAborted()) throw new Error('AbortError'); // 实时打断流接收
+                  chunkCount++;
+                  if (chunk.delta) {
+                    currentChunkDelta += chunk.delta;
+                    fullResponse += chunk.delta;
+                  }
+                  if (chunk.tool_calls) {
+                    for (const tc of chunk.tool_calls) {
+                      if (!currentToolCalls[tc.index]) {
+                        currentToolCalls[tc.index] = { id: tc.id, type: 'function', function: { name: '', arguments: '' } };
                       }
+                      if (tc.id) currentToolCalls[tc.index].id = tc.id;
+                      if (tc.function?.name) currentToolCalls[tc.index].function.name += tc.function.name;
+                      if (tc.function?.arguments) currentToolCalls[tc.index].function.arguments += tc.function.arguments;
                     }
-                    res.write(`data: ${JSON.stringify({ type: 'chunk', ...chunk })}\n\n`);
-                    if (chunkCount === 1) {
-                      sendStatus('streaming', loopCount > 1 ? '🔄 正在执行后台工具...' : '💬 正在生成回复...');
-                    }
-                  },
-                  targetConfig.id,
-                  streamCtrl.signal  // ← AbortSignal so STOP cancels the LLM fetch
-                );
-              } catch (streamErr: any) {
-                if (streamErr.name === 'AbortError') {
-                  console.log(`[Server] LLM fetch stream aborted manually.`);
-                  // Swallowing the AbortError here allows the rest of the loop (and the save-on-abort logic) to execute
-                } else {
-                  throw streamErr;
-                }
-              }
-            } finally {
-              // Unregister controller once stream is done (success or abort)
-              if (conversationId) {
-                ChatOrchestrator.streamControllers.delete(conversationId);
+                  }
+                  res.write(`data: ${JSON.stringify({ type: 'chunk', ...chunk })}\n\n`);
+                  if (chunkCount === 1) {
+                    sendStatus('streaming', loopCount > 1 ? '🔄 正在执行后台工具...' : '💬 正在生成回复...');
+                  }
+                },
+                targetConfig.id,
+                globalAbortCtrl.signal
+              );
+            } catch (streamErr: any) {
+              if (streamErr.name === 'AbortError' || streamErr.message === 'AbortError') {
+                console.warn(`[Server] LLM fetch stream aborted via AbortController.`);
+                throw new Error('AbortError'); // 向上抛出以结束整个协调层
+              } else {
+                throw streamErr;
               }
             }
 
             const toolCallsArray = Object.values(currentToolCalls);
             if (toolCallsArray.length > 0) {
+              if (isAborted()) throw new Error('AbortError');
               // ── 循环检测（共享逻辑） ──
               const loopWarning = detectToolLoop(toolCallsArray as ToolCall[], loopDetector, MAX_REPEATS);
               if (loopWarning) {
@@ -1087,15 +1118,24 @@ ${new Date().toLocaleString('zh-CN')}
             });
             const thread = agentService.getThread(conversationId);
             if (thread) {
-              agentService.updateThread(conversationId, {
-                messages: [...thread.messages, {
-                  id: `msg-${Date.now()}`,
+              const msgIndex = thread.messages.findIndex(m => m.id === initialMessageId);
+              const updatedMessages = [...thread.messages];
+              if (msgIndex !== -1) {
+                updatedMessages[msgIndex] = {
+                  ...updatedMessages[msgIndex],
+                  content: fullResponse,
+                  attachments: currentTurnAttachments.length > 0 ? currentTurnAttachments : undefined
+                };
+              } else {
+                updatedMessages.push({
+                  id: initialMessageId,
                   role: 'assistant',
                   content: fullResponse,
                   timestamp: Date.now(),
                   attachments: currentTurnAttachments.length > 0 ? currentTurnAttachments : undefined
-                }],
-              });
+                });
+              }
+              agentService.updateThread(conversationId, { messages: updatedMessages });
             }
           }
 
@@ -1111,9 +1151,38 @@ ${new Date().toLocaleString('zh-CN')}
             }
           }
 
+          // ── QC-Harness: SessionStop ──
+          qcHarness.stopSession().catch(() => {});
+
           res.end();
-        } catch (streamError) {
+        } catch (streamError: any) {
           const duration = Date.now() - startTime;
+          const isAbort = streamError.name === 'AbortError' || streamError.message === 'AbortError' || isAborted();
+          
+          if (isAbort) {
+            fullResponse += '\n\n*(已终止)*';
+            res.write(`data: ${JSON.stringify({ type: 'chunk', delta: '\n\n*(已终止)*' })}\n\n`);
+          }
+          
+          // 【核心修复 - 断联保底落库】发生异常或强杀时，强制保存目前内存中挤出的有效句子！
+          if (fullResponse && conversationId) {
+            try {
+              const thread = agentService.getThread(conversationId);
+              if (thread) {
+                const msgIndex = thread.messages.findIndex(m => m.id === initialMessageId);
+                const updatedMessages = [...thread.messages];
+                if (msgIndex !== -1) {
+                  updatedMessages[msgIndex] = {
+                    ...updatedMessages[msgIndex],
+                    content: fullResponse,
+                    attachments: currentTurnAttachments.length > 0 ? currentTurnAttachments : undefined
+                  };
+                }
+                agentService.updateThread(conversationId, { messages: updatedMessages });
+              }
+            } catch (saveErr) {}
+          }
+
           const errorMessage = (streamError as Error).message;
           const llmConfig = modelsManager.getConfig(targetConfig.id);
           if (llmConfig) {
@@ -1127,12 +1196,17 @@ ${new Date().toLocaleString('zh-CN')}
               outputTokens: 0,
               duration,
               success: false,
-              error: errorMessage,
+              error: isAbort ? 'Aborted' : errorMessage,
             });
           }
-          console.error('Stream error:', streamError);
-          res.write(`data: ${JSON.stringify({ type: 'error', error: errorMessage, done: true })}\n\n`);
-          res.end();
+          console.error(isAbort ? 'Stream manually aborted' : 'Stream error:', streamError);
+          // 仅当可写流存活时返回错误标识
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: 'error', error: isAbort ? 'Aborted' : errorMessage, done: true })}\n\n`);
+            res.end();
+          }
+        } finally {
+          if (conversationId) ChatOrchestrator.streamControllers.delete(conversationId);
         }
       } else {
         const startTime = Date.now();
@@ -1141,15 +1215,17 @@ ${new Date().toLocaleString('zh-CN')}
           try {
             sessionId = gatewayService.createSession(agentId, conversationId, 'web', 'web');
             console.log(`[Server] Created gateway session ${sessionId} for agent ${agentId}`);
+            // ── QC-Harness: SessionStart (non-stream) ──
+            qcHarness.startSession(conversationId, agentId).catch(() => {});
           } catch (error) {
             console.error('[Server] Failed to create gateway session:', error);
           }
         }
-        let response = await modelsManager.chat({
+        let response = await withRetry(() => modelsManager.chat({
           messages: messagesWithSystem,
           tools: injectedTools,
           tool_choice: injectedTools && injectedTools.length > 0 ? 'auto' : undefined
-        }, targetConfig.id);
+        }, targetConfig.id));
 
         let loopCount = 0;
         const loopDetector: LoopDetector = { lastSignatures: [], repeatCount: 0 };
@@ -1193,11 +1269,11 @@ ${new Date().toLocaleString('zh-CN')}
             currentTurnAttachments.push(...result.attachments);
             response.content = (response.content || '') + result.displayBlock;
           }
-          response = await modelsManager.chat({
+          response = await withRetry(() => modelsManager.chat({
             messages: messagesWithSystem,
             tools: injectedTools,
             tool_choice: injectedTools && injectedTools.length > 0 ? 'auto' : undefined
-          }, targetConfig.id);
+          }, targetConfig.id));
         }
 
         if (loopCount >= MAX_LOOPS) {
@@ -1239,12 +1315,17 @@ ${new Date().toLocaleString('zh-CN')}
         if (!response.content || response.content.trim() === '') {
           const errorMessage = '模型返回了空白内容，请检查模型配置和系统提示词';
           console.error('[Server] Empty response from LLM');
+          qcHarness.stopSession().catch(() => {});
           res.status(500).json({ error: errorMessage, contextInfo });
         } else {
+          // ── QC-Harness: SessionStop (non-stream success) ──
+          qcHarness.stopSession().catch(() => {});
           res.json({ ...response, attachments: currentTurnAttachments, contextInfo });
         }
       }
     } catch (error) {
+      // ── QC-Harness: SessionStop (error path) ──
+      qcHarness.stopSession().catch(() => {});
       console.error('Chat error:', error);
       res.status(500).json({ error: (error as Error).message });
     }
